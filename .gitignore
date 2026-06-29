@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.postgres-data/
+
+# Audio / Temp files
+*.wav
+*.mp3
+*.ogg
+*.flac
+/tmp/
+/audio_temp/
+
+# Logs
+*.log
+/logs/
+
+# Swarm (keep only .swarm/ in repo)
+.swarm/evidence/
+.swarm/runs/
+.swarm/session/
+.swarm/summaries/
+.swarm/telemetry.jsonl
+.swarm/dark-matter.md
+
+# Config
+config/employee_mapping.json

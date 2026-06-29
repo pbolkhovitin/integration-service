@@ -1,0 +1,117 @@
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  integration-net:
+    driver: bridge
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: integration-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - integration-net
+    env_file: .env
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: integration-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    networks:
+      - integration-net
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: integration-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    networks:
+      - integration-net
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: integration-worker
+    restart: unless-stopped
+    init: true
+    networks:
+      - integration-net
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: integration-beat
+    restart: unless-stopped
+    init: true
+    networks:
+      - integration-net
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.worker.celery_app beat --loglevel=info --scheduler redbeat.schedulers.RedBeatScheduler
+
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: integration-flower
+    restart: unless-stopped
+    ports:
+      - "5555:5555"
+    networks:
+      - integration-net
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: celery -A app.worker.celery_app flower --port=5555 --broker=${CELERY_BROKER_URL}
