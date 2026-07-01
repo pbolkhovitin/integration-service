@@ -42,7 +42,7 @@
     └──────────────────┘     └──────────────────┘
 ```
 
-## Быстрый старт
+## Быстрый старт (Production Mode)
 
 ### Предварительные требования
 
@@ -59,8 +59,9 @@ cd integration-service
 # 2. Настроить окружение
 cp .env.example .env
 # Отредактировать .env — указать обязательные переменные
-# (GLPI_URL, GLPI_CLIENT_ID, GLPI_CLIENT_SECRET,
-#  GLPI_USERNAME, GLPI_PASSWORD, BITRIX24_WEBHOOK_URL)
+# (GLPI_URL, GLPI_APP_TOKEN, GLPI_USER_TOKEN,
+#  BITRIX24_WEBHOOK_URL, BITRIX24_USER_ID,
+#  POSTGRES_PASSWORD)
 
 # 3. Создать файл маппинга сотрудников
 cp config/employee_mapping.json.example config/employee_mapping.json
@@ -76,12 +77,80 @@ docker compose ps
 # Все 6 контейнеров должны быть в статусе Up
 
 curl http://localhost:8000/health
-# → {"status": "ok"}
-```
+# → {"status": "healthy"}
 
 ### Мониторинг
 
 Flower (Celery Monitor) доступен по адресу: http://localhost:5555
+
+## MVP Sync Mode (быстрый старт без Docker)
+
+Режим MVP (Minimum Viable Product) — облегчённый вариант запуска для демонстрации
+и тестирования без Docker, Celery и Redis. Обработка вебхука Bitrix24 и создание
+тикета в GLPI происходят **синхронно** внутри FastAPI request handler.
+
+### Предварительные требования
+
+- Python 3.11+
+- PostgreSQL 15+ (локально или доступный удалённо)
+- git
+
+### Быстрый запуск
+
+```bash
+# 1. Клонировать и перейти в директорию
+git clone <repo-url> integration-service
+cd integration-service
+
+# 2. Создать виртуальное окружение
+python3.11 -m venv venv
+source venv/bin/activate
+
+# 3. Установить зависимости
+pip install -r requirements.txt
+
+# 4. Настроить окружение
+cp .env.example .env
+# Отредактировать .env:
+#   GLPI_URL, GLPI_APP_TOKEN, GLPI_USER_TOKEN,
+#   BITRIX24_WEBHOOK_URL, BITRIX24_USER_ID
+#   POSTGRES_SERVER=localhost, POSTGRES_PASSWORD=your_password
+
+# 5. Создать файл маппинга сотрудников
+cp config/employee_mapping.json.example config/employee_mapping.json
+
+# 6. Применить миграции БД
+alembic upgrade head
+
+# 7. Запустить сервис
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# 8. Проверить состояние
+curl http://localhost:8000/health
+# → {"status": "healthy"}
+curl http://localhost:8000/ready
+# → {"status": "ready"}
+```
+
+### Отличия от Production Mode
+
+| | MVP Sync Mode | Production Mode |
+|---|---|---|
+| Обработка | Синхронная (в запросе) | Асинхронная (Celery worker) |
+| Зависимости | Python + PostgreSQL | Docker (6 контейнеров) |
+| Retry | Нет (ошибка = HTTP 500) | Да (exponential backoff) |
+| Идемпотентность | Да (по idempotency_key) | Да |
+| Масштабирование | 1 процесс | N workers + Celery Beat |
+| Использование | Демо, разработка, тесты | Production |
+
+### Аутентификация GLPI
+
+В MVP-режиме используется аутентификация через **App-Token** (`GLPI_APP_TOKEN` +
+`GLPI_USER_TOKEN`). Production-режим в будущих релизах добавит поддержку OAuth2.
+
+### Переменные окружения
+
+Полный список доступных переменных окружения см. в файле `.env.example`.
 
 ## Архитектура
 
@@ -107,7 +176,11 @@ Flower (Celery Monitor) доступен по адресу: http://localhost:555
 - `GET /tasks` — список задач с фильтрацией
 
 Запросы проходят **идемпотент-контроль**: повторные вебхуки с тем же
-`idempotency_key` не создают дубликатов.
+`idempotency_key` (поле JSON-тела) не создают дубликатов.
+
+> **Phase 1 (MVP):** В синхронном режиме обработка вебхука /webhook/bitrix/lead
+> происходит в том же запросе, без Celery. Эндпоинты /webhook/mango, /tasks
+> и /tasks/{id} будут добавлены в следующих фазах.
 
 ### Celery Worker (worker)
 
@@ -148,19 +221,24 @@ Flower (Celery Monitor) доступен по адресу: http://localhost:555
 
 ### GLPI
 
+**MVP (Phase 1) — аутентификация через App-Token:**
+
 | Переменная          | Обязательная | По умолчанию      | Описание                     |
 |---------------------|-------------|-------------------|------------------------------|
 | `GLPI_URL`          | да          | `http://glpi:80`  | Базовый URL GLPI API         |
-| `GLPI_CLIENT_ID`    | **да**      | —                 | Client ID для OAuth          |
-| `GLPI_CLIENT_SECRET`| **да**      | —                 | Client Secret для OAuth      |
-| `GLPI_USERNAME`     | **да**      | —                 | Пользователь GLPI            |
-| `GLPI_PASSWORD`     | **да**      | —                 | Пароль пользователя GLPI     |
+| `GLPI_APP_TOKEN`    | **да**      | —                 | GLPI App-Token (заголовок)   |
+| `GLPI_USER_TOKEN`   | **да**      | —                 | GLPI API User Token (Basic Auth, username) |
+
+> **Phase 4 (планируется):** OAuth2-аутентификация через
+> `GLPI_CLIENT_ID`, `GLPI_CLIENT_SECRET`, `GLPI_USERNAME`, `GLPI_PASSWORD`.
+> На данный момент эти переменные не используются.
 
 ### Bitrix24
 
 | Переменная             | Обязательная | По умолчанию | Описание                        |
 |------------------------|-------------|--------------|---------------------------------|
 | `BITRIX24_WEBHOOK_URL` | **да**      | —            | Входящий вебхук Bitrix24        |
+| `BITRIX24_USER_ID`     | **да**      | —            | ID пользователя Bitrix24 (ответственный за лиды) |
 
 ### Employee Mapping
 
@@ -195,52 +273,53 @@ Flower (Celery Monitor) доступен по адресу: http://localhost:555
 
 | Переменная  | Обязательная | По умолчанию | Описание              |
 |-------------|-------------|--------------|-----------------------|
-| `API_HOST`  | нет         | `0.0.0.0`    | Хост для Uvicorn      |
-| `API_PORT`  | нет         | `8000`       | Порт для Uvicorn      |
+| `APP_HOST`  | нет         | `0.0.0.0`    | Хост для Uvicorn      |
+| `APP_PORT`  | нет         | `8000`       | Порт для Uvicorn      |
 
 ## API Endpoints
 
 ### Вебхуки
 
 ```
-POST /webhook/bitrix
+POST /webhook/bitrix/lead
   Принимает: application/json
-  Тело: объект лида Bitrix24
-  Idempotency: заголовок X-Idempotency-Key
-  Ответ: 202 {"task_id": "uuid", "status": "accepted"}
-  Ошибки: 400 — некорректный payload, 409 — дубликат
+  Тело: объект лида Bitrix24 (name — обязателен, остальные поля опциональны)
+  Idempotency: поле idempotency_key в JSON теле запроса
+  Ответ: 200 {"status": "success", "task_id": "uuid", "glpi_ticket": {...}}
+    — при успешном создании тикета
+    {"status": "duplicate", "task_id": "uuid"}
+    — повторный запрос с тем же idempotency_key (COMPLETED/FAILED)
+    {"status": "in_progress", "task_id": "uuid"}
+    — задача с таким idempotency_key уже выполняется (PENDING/PROCESSING)
+  Ошибки: 422 — некорректный payload (Pydantic validation)
+          500 — ошибка при создании тикета в GLPI
 
-POST /webhook/mango
-  Принимает: application/json (или multipart/form-data с аудио)
-  Тело: объект звонка MANGO Office, опционально аудиофайл
-  Idempotency: заголовок X-Idempotency-Key
-  Ответ: 202 {"task_id": "uuid", "status": "accepted"}
-  Ошибки: 400 — некорректный payload
 ```
 
 ### Health Check
 
 ```
 GET /health
-  Ответ: 200 {"status": "ok"}
+  Ответ: 200 {"status": "healthy"}
+
+GET /ready
+  Ответ: 200 {"status": "ready"} — БД доступна
+  Ответ: 200 {"status": "unhealthy"} — БД недоступна
 ```
 
 ### Управление задачами
 
 ```
 GET /tasks/{id}
-  Ответ: 200 — объект задачи (Task)
-  Ошибки: 404 — задача не найдена
+  _Реализуется в Phase 2 (асинхронная обработка)._
 
 GET /tasks?status=pending&source=bitrix&limit=50&offset=0
-  Параметры:
-    - status   — фильтр по статусу (pending/processing/completed/failed/cancelled)
-    - source   — фильтр по источнику (bitrix/mango/glpi)
-    - type     — фильтр по типу (create_ticket/register_call/transcribe)
-    - limit    — макс. количество записей (по умолч. 50, макс. 200)
-    - offset   — смещение для пагинации (по умолч. 0)
-  Ответ: 200 {"items": [...], "total": N, "limit": N, "offset": N}
+  _Реализуется в Phase 2 (асинхронная обработка)._
 ```
+
+> **Примечание:** В MVP Sync Mode эндпоинты `/webhook/mango`, `/tasks/{id}` и
+> `/tasks` не реализованы — они будут добавлены в следующих фазах вместе с
+> Celery-воркером и асинхронной обработкой.
 
 ## Структура базы данных
 
@@ -366,8 +445,7 @@ alembic upgrade head
 # 6. Запустить API
 uvicorn app.main:app --reload --port 8000
 
-# 7. Запустить Worker (в отдельном терминале)
-celery -A app.worker.celery_app worker --loglevel=info --concurrency=4
+# *Celery worker запускается в Phase 2 (асинхронная обработка)*
 ```
 
 ### Тесты

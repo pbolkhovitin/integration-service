@@ -1,0 +1,13 @@
+{
+  "_comment": "Mapping configuration for Bitrix24 lead → GLPI ticket fields. Copy this file to employee_mapping.json and customize.",
+  "field_mapping": [
+    {"lead_field": "name", "glpi_field": "name", "description": "Lead name becomes ticket title"},
+    {"lead_field": "phone", "glpi_field": "content", "description": "Phone number appended to ticket description"},
+    {"lead_field": "email", "glpi_field": "content", "description": "Email appended to ticket description"},
+    {"lead_field": "offer_content", "glpi_field": "content", "description": "Offer text appended to ticket description"}
+  ],
+  "default_glpi_ticket_type": 1,
+  "default_glpi_ticket_type_description": "1 = Incident (GLPI standard)",
+  "default_glpi_ticket_category": null,
+  "default_glpi_ticket_category_description": "Set to a valid GLPI ITIL category ID or leave null"
+}

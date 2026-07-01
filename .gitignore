@@ -53,3 +53,8 @@ Thumbs.db
 
 # Config
 config/employee_mapping.json
+
+# OpenCode / Swarm runtime
+.opencode/
+.pytest_cache/
+output_1_*
