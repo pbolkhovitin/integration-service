@@ -54,7 +54,6 @@ class GLPIClient:
                 "Content-Type": "application/json",
                 "App-Token": self._app_token,
             },
-            auth=httpx.BasicAuth(username=self._user_token, password=""),
             timeout=httpx.Timeout(self._timeout),
         )
 
@@ -75,9 +74,9 @@ class GLPIClient:
     def init_session(self) -> str:
         """Initialise a GLPI API session and return the session token.
 
-        Sends a ``POST {base_url}/apirest.php/initSession`` request with
-        the App-Token header and HTTP Basic Authentication (user token as
-        the username, empty password).
+        Sends a ``GET {base_url}/apirest.php/initSession?user_token=…``
+        request with the App-Token header. GLPI legacy API uses
+        ``user_token`` as query param, NOT Basic Auth.
 
         Returns:
             Session token string from the ``session_token`` field of the
@@ -88,9 +87,12 @@ class GLPIClient:
                 response payload.
         """
         url = f"{self._base_url}/apirest.php/initSession"
-        logger.debug("POST %s — initialising GLPI session", url)
+        params = {"user_token": self._user_token}
+        logger.debug("GET %s — initialising GLPI session", url)
 
-        return self._call(method="POST", url=url, extract_key="session_token")
+        return self._call(
+            method="GET", url=url, params=params, extract_key="session_token"
+        )
 
     # ------------------------------------------------------------------
     # Ticket operations
@@ -173,6 +175,7 @@ class GLPIClient:
         method: str,
         url: str,
         json_body: dict[str, Any] | None = None,
+        params: dict[str, str] | None = None,
         extract_key: str | None = None,
         session_token: str | None = None,
     ) -> Any:
@@ -205,6 +208,7 @@ class GLPIClient:
                 method=method,
                 url=url,
                 headers=headers or None,
+                params=params,
                 json=json_body,
             )
         except httpx.RequestError as exc:

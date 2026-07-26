@@ -16,10 +16,27 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
 
-DATABASE_URL: str = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://integration:changeme@localhost:5432/integration",
-)
+
+def _build_database_url() -> str:
+    """Build DATABASE_URL from environment variables.
+
+    Prefers DATABASE_URL if set (e.g. in local dev).
+    Otherwise, constructs from POSTGRES_* variables (Docker Compose).
+    """
+    url = os.getenv("DATABASE_URL")
+    if url:
+        return url
+
+    user = os.getenv("POSTGRES_USER", "integration")
+    password = os.getenv("POSTGRES_PASSWORD", "changeme")
+    host = os.getenv("POSTGRES_SERVER", "localhost")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    db = os.getenv("POSTGRES_DB", "integration")
+
+    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{db}"
+
+
+DATABASE_URL: str = _build_database_url()
 
 engine = create_async_engine(DATABASE_URL, echo=False, future=True)
 

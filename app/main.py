@@ -16,6 +16,7 @@ from sqlalchemy import text
 from app.api.bitrix import router as bitrix_router
 from app.config.settings import settings
 from app.core import database
+from app.services.poller import start_poller, stop_poller
 
 logger = logging.getLogger(__name__)
 
@@ -24,15 +25,13 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Manage the application lifecycle.
 
-    Startup: logs that the application is starting.  The database engine is
-    lazy (connections are created on first query), so no explicit connection
-    is established here.
-
-    Shutdown: disposes the async engine connection pool, if the engine was
-    ever used.
+    Startup: logs that the application is starting, starts the poller.
+    Shutdown: stops the poller, disposes the async engine connection pool.
     """
     logger.info("Starting %s", settings.APP_NAME)
+    start_poller()
     yield
+    stop_poller()
     await database.engine.dispose()
     logger.info("Shutdown complete")
 
