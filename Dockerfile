@@ -30,6 +30,8 @@ COPY --from=builder /root/.local /root/.local
 # Copy application code
 COPY app/ ./app/
 COPY config/ ./config/
+COPY alembic.ini .
+COPY alembic/ ./alembic/
 
 # Ensure scripts are in PATH
 ENV PATH=/root/.local/bin:$PATH
