@@ -102,10 +102,11 @@ class BitrixClient:
         result = self._call("tasks.task.list.json", params=params)
 
         # tasks.task.list returns:
-        # {"result": {"tasks": [...], "next": N, "total": N}, "next": N, "total": N}
+        # {"result": {"tasks": [...]}, "next": N, "total": N, "time": {...}}
+        # NOTE: "next" and "total" are at TOP level, NOT inside "result"
         result_data = result.get("result", {})
         raw_tasks = result_data.get("tasks", [])
-        next_offset = result_data.get("next", 0)
+        next_offset = result.get("next", 0)
 
         # Map camelCase → SCREAMING_SNAKE for poller compatibility
         tasks = [self._map_task_fields(t) for t in raw_tasks]
