@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from app.config.settings import settings
 from app.core.database import async_session_factory
-from app.models.task import Task, TaskStatus
+from app.models.task import Task
 from app.services.bitrix import BitrixClient
 from app.services.glpi import GLPIClient
 
@@ -167,7 +167,7 @@ async def _process_task(
         )
         existing = result.scalar_one_or_none()
         if existing is not None:
-            if existing.status == TaskStatus.COMPLETED:
+            if existing.status.value == "completed":
                 return "skipped"
             # If failed, we could retry, but for MVP skip
             return "skipped"
@@ -182,7 +182,7 @@ async def _process_task(
             source_id=task_id,
             type="create_ticket",
             payload=task_data,
-            status=TaskStatus.PROCESSING,
+            status="processing",
             idempotency_key=f"b24:{task_id}",
         )
         db.add(task)
@@ -206,7 +206,7 @@ async def _process_task(
                 )
             )
             task = result.scalar_one_or_none()
-            task.status = TaskStatus.FAILED
+            task.status = "failed"
             task.last_error = str(exc)
             await db.commit()
         return "skipped"
@@ -221,7 +221,7 @@ async def _process_task(
         )
         task = result.scalar_one_or_none()
         if task:
-            task.status = TaskStatus.COMPLETED
+            task.status = "completed"
             task.result = ticket
             await db.commit()
 
