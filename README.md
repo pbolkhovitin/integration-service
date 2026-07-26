@@ -1,160 +1,42 @@
 # Интеграционный сервис Bitrix24 / GLPI / MANGO Office
 
 Сервис для синхронизации данных между **Bitrix24**, **GLPI** и **MANGO Office**.
-Принимает вебхуки от Bitrix24 (лиды) и MANGO Office (звонки, записи разговоров),
-создаёт тикеты в GLPI, регистрирует звонки в Bitrix24 и транскрибирует
-аудиозаписи через **faster-whisper**.
 
-## Поток данных
+**Текущий статус:** MVP — опрос Bitrix24 REST API → создание тикетов в GLPI.
+
+## Поток данных (MVP — polling mode)
 
 ```
-┌──────────────┐     ┌──────────────────┐     ┌──────────┐
-│   Bitrix24   │────▶│  FastAPI (API)   │◀────│  MANGO   │
-│   (лиды)     │     │  /webhook/bitrix │     │  Office  │
-│              │     │  /webhook/mango  │     │ (звонки) │
-└──────────────┘     └────────┬─────────┘     └──────────┘
-                              │
-                              ▼
-                    ┌──────────────────┐
-                    │  PostgreSQL      │
-                    │  ┌────────────┐  │
-                    │  │   tasks    │  │
-                    │  │ attempts   │  │  Transactional
-                    │  │  outbox    │  │  Outbox
-                    │  └────────────┘  │
-                    └────────┬─────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              ▼                              ▼
-    ┌──────────────────┐          ┌──────────────────┐
-    │  Celery Worker   │          │  Redis (Broker)  │
-    │  ┌────────────┐  │          │  + RedBeat       │
-    │  │  GLPI      │  │          │  (планировщик)   │
-    │  │  Bitrix24  │  │          └──────────────────┘
-    │  │  Whisper   │  │
-    │  │  (транскр.)│  │
-    │  └────────────┘  │
-    └──────────────────┘
-              │
-              ▼
-    ┌──────────────────┐     ┌──────────────────┐
-    │  GLPI (тикеты)   │     │  Bitrix24 (звонки)│
-    └──────────────────┘     └──────────────────┘
+┌──────────────────┐     ┌──────────────────┐     ┌──────────┐
+│  Bitrix24 REST   │◀────│  Integration     │────▶│  GLPI    │
+│  API (polling)   │     │  Service (API)   │     │ (тикеты) │
+│  tasks.task.*    │     │  :8000           │     │ :8080    │
+└──────────────────┘     └────────┬─────────┘     └──────────┘
+                                  │
+                                  ▼
+                        ┌──────────────────┐
+                        │  PostgreSQL 15   │
+                        │  ┌────────────┐  │
+                        │  │   tasks    │  │
+                        │  │ attempts   │  │
+                        │  │  outbox    │  │  (unused in MVP)
+                        │  └────────────┘  │
+                        └──────────────────┘
 ```
-
-## Быстрый старт (Production Mode)
-
-### Предварительные требования
-
-- Docker 24+
-- Docker Compose v2
-
-### Запуск
-
-```bash
-# 1. Клонировать репозиторий
-git clone <repo-url> integration-service
-cd integration-service
-
-# 2. Настроить окружение
-cp .env.example .env
-# Отредактировать .env — указать обязательные переменные
-# (GLPI_URL, GLPI_APP_TOKEN, GLPI_USER_TOKEN,
-#  BITRIX24_WEBHOOK_URL, BITRIX24_USER_ID,
-#  POSTGRES_PASSWORD)
-
-# 3. Создать файл маппинга сотрудников
-cp config/employee_mapping.json.example config/employee_mapping.json
-
-# 4. Запустить сервисы
-docker compose up -d
-
-# 5. Применить миграции БД
-docker compose exec api alembic upgrade head
-
-# 6. Проверить состояние
-docker compose ps
-# Все 6 контейнеров должны быть в статусе Up
-
-curl http://localhost:8000/health
-# → {"status": "healthy"}
-
-### Мониторинг
-
-Flower (Celery Monitor) доступен по адресу: http://localhost:5555
-
-## MVP Sync Mode (быстрый старт без Docker)
-
-Режим MVP (Minimum Viable Product) — облегчённый вариант запуска для демонстрации
-и тестирования без Docker, Celery и Redis. Обработка вебхука Bitrix24 и создание
-тикета в GLPI происходят **синхронно** внутри FastAPI request handler.
-
-### Предварительные требования
-
-- Python 3.11+
-- PostgreSQL 15+ (локально или доступный удалённо)
-- git
-
-### Быстрый запуск
-
-```bash
-# 1. Клонировать и перейти в директорию
-git clone <repo-url> integration-service
-cd integration-service
-
-# 2. Создать виртуальное окружение
-python3.11 -m venv venv
-source venv/bin/activate
-
-# 3. Установить зависимости
-pip install -r requirements.txt
-
-# 4. Настроить окружение
-cp .env.example .env
-# Отредактировать .env:
-#   GLPI_URL, GLPI_APP_TOKEN, GLPI_USER_TOKEN,
-#   BITRIX24_WEBHOOK_URL, BITRIX24_USER_ID
-#   POSTGRES_SERVER=localhost, POSTGRES_PASSWORD=your_password
-
-# 5. Создать файл маппинга сотрудников
-cp config/employee_mapping.json.example config/employee_mapping.json
-
-# 6. Применить миграции БД
-alembic upgrade head
-
-# 7. Запустить сервис
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-
-# 8. Проверить состояние
-curl http://localhost:8000/health
-# → {"status": "healthy"}
-curl http://localhost:8000/ready
-# → {"status": "ready"}
-```
-
-### Отличия от Production Mode
-
-| | MVP Sync Mode | Production Mode |
-|---|---|---|
-| Обработка | Синхронная (в запросе) | Асинхронная (Celery worker) |
-| Зависимости | Python + PostgreSQL | Docker (6 контейнеров) |
-| Retry | Нет (ошибка = HTTP 500) | Да (exponential backoff) |
-| Идемпотентность | Да (по idempotency_key) | Да |
-| Масштабирование | 1 процесс | N workers + Celery Beat |
-| Использование | Демо, разработка, тесты | Production |
-
-### Аутентификация GLPI
-
-В MVP-режиме используется аутентификация через **App-Token** (`GLPI_APP_TOKEN` +
-`GLPI_USER_TOKEN`). Production-режим в будущих релизах добавит поддержку OAuth2.
-
-### Переменные окружения
-
-Полный список доступных переменных окружения см. в файле `.env.example`.
 
 ## Архитектура
 
-Сервис состоит из 6 контейнеров Docker:
+### MVP (текущий режим) — Polling + Sync
+
+| Сервис    | Назначение                                    | Порты          |
+|-----------|-----------------------------------------------|----------------|
+| `postgres`| PostgreSQL 15 (хранилище задач)               | `5433→5432`    |
+| `api`     | FastAPI + APScheduler (poller внутри процесса) | `8000`         |
+
+Два контейнера. Без Redis, Celery, Flower. Poller опрашивает Bitrix24 каждые N
+секунд и создает тикеты в GLPI синхронно внутри AsyncIO.
+
+### Production (будущее) — Webhook + Celery
 
 | Сервис    | Назначение                                    | Порты     |
 |-----------|-----------------------------------------------|-----------|
@@ -165,161 +47,221 @@ curl http://localhost:8000/ready
 | `beat`    | Celery Beat (планировщик периодических задач)  | —         |
 | `flower`  | Веб-мониторинг Celery                          | `5555`    |
 
-### FastAPI (api)
+Шесть контейнеров. Входящие вебхуки от Bitrix24 и MANGO Office, асинхронная
+обработка через Celery, retry с exponential backoff, transactional outbox.
 
-Принимает входящие вебхуки от внешних систем:
+## Быстрый старт — MVP (Docker Compose)
 
-- `POST /webhook/bitrix` — уведомления о новых лидах из Bitrix24
-- `POST /webhook/mango` — уведомления о звонках и аудиозаписях из MANGO Office
-- `GET /health` — проверка состояния сервиса
-- `GET /tasks/{id}` — статус задачи по ID
-- `GET /tasks` — список задач с фильтрацией
+### Предварительные требования
 
-Запросы проходят **идемпотент-контроль**: повторные вебхуки с тем же
-`idempotency_key` (поле JSON-тела) не создают дубликатов.
+- Docker 24+
+- Docker Compose v2
+- Доступ к Bitrix24 (self-hosted или облачный)
+- Доступ к GLPI (API включен)
 
-> **Phase 1 (MVP):** В синхронном режиме обработка вебхука /webhook/bitrix/lead
-> происходит в том же запросе, без Celery. Эндпоинты /webhook/mango, /tasks
-> и /tasks/{id} будут добавлены в следующих фазах.
+### Запуск
 
-### Celery Worker (worker)
+```bash
+# 1. Клонировать репозиторий
+git clone git@github.com:pbolkhovitin/integration-service.git
+cd integration-service
 
-Асинхронно выполняет задачи, созданные через transactional outbox:
+# 2. Настроить окружение
+cp .env.example .env
+# Отредактировать .env — см. раздел "Переменные окружения" ниже
 
-- **Создание тикета в GLPI** — по новому лиду из Bitrix24
-- **Регистрация звонка в Bitrix24** — по событию из MANGO Office
-- **Транскрибация аудиозаписи** — через faster-whisper large-v3
-- **Обновление статуса звонка** — после завершения транскрибации
+# 3. Собрать и запустить
+docker compose -f docker-compose.mvp.yml build
+docker compose -f docker-compose.mvp.yml up -d
 
-### Celery Beat (beat)
+# 4. Применить миграции БД
+docker exec -e DATABASE_URL='postgresql+asyncpg://integration:${POSTGRES_PASSWORD}@postgres:5432/integration' \
+  integration-api alembic upgrade head
 
-Планировщик периодических задач на базе **RedBeat** (Redis). Выполняет:
+# 5. Проверить состояние
+docker compose -f docker-compose.mvp.yml ps
+# Оба контейнера (postgres, api) должны быть Up
 
-- **Очистка устаревших лизенов** — возврат в очередь зависших задач
-- **Переотправка outbox-сообщений** — повторная публикация неопубликованных записей
-- **Пул устаревших задач** — обработка задач, превысивших лимит попыток
+curl http://localhost:8000/health
+# → {"status":"healthy"}
+
+curl http://localhost:8000/ready
+# → {"status":"ready"}
+
+curl http://localhost:8000/api/bitrix24/sync/status
+# → {"status":"running","interval_seconds":60,"responsible_ids":[70],...}
+```
+
+### Ручной запуск синхронизации
+
+```bash
+# Немедленный poll (без ожидания расписания)
+curl -X POST http://localhost:8000/api/bitrix24/sync/trigger
+# → {"status":"completed"}
+```
+
+### Логи
+
+```bash
+# Логи API (включая логи poller)
+docker compose -f docker-compose.mvp.yml logs -f api
+
+# Логи PostgreSQL
+docker compose -f docker-compose.mvp.yml logs -f postgres
+```
+
+## Быстрый старт — Production (Docker Compose)
+
+```bash
+# 1. Клонировать и настроить
+git clone git@github.com:pbolkhovitin/integration-service.git
+cd integration-service
+cp .env.example .env
+# Отредактировать .env — указать все обязательные переменные
+
+# 2. Создать файл маппинга сотрудников
+cp config/employee_mapping.json.example config/employee_mapping.json
+
+# 3. Запустить все сервисы
+docker compose up -d
+
+# 4. Применить миграции БД
+docker compose exec api alembic upgrade head
+
+# 5. Проверить
+docker compose ps
+# Все 6 контейнеров должны быть Up
+curl http://localhost:8000/health
+# → {"status": "healthy"}
+
+# Мониторинг — Flower
+# http://localhost:5555
+```
+
+## Локальная разработка (без Docker)
+
+```bash
+# 1. Создать виртуальное окружение
+python3.11 -m venv venv
+source venv/bin/activate
+
+# 2. Установить зависимости
+pip install -r requirements.txt
+
+# 3. Запустить PostgreSQL
+# (через Docker или локально)
+
+# 4. Настроить .env
+cp .env.example .env
+# Отредактировать .env:
+#   DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/integration
+#   GLPI_URL=http://localhost:8080
+#   GLPI_APP_TOKEN=<token>
+#   GLPI_USER_TOKEN=<token>
+#   BITRIX24_WEBHOOK_URL=https://b24.example.com/rest/USER/TOKEN
+#   BITRIX24_RESPONSIBLE_IDS=70
+
+# 5. Применить миграции
+alembic upgrade head
+
+# 6. Запустить API (включая poller)
+uvicorn app.main:app --reload --port 8000
+```
 
 ## Переменные окружения
 
-Все настройки задаются через переменные окружения (файл `.env`).
+### Обязательные (MVP)
 
-### PostgreSQL
+| Переменная                  | Описание                              | Пример                                          |
+|-----------------------------|---------------------------------------|-------------------------------------------------|
+| `POSTGRES_PASSWORD`         | Пароль PostgreSQL                     | `integration123`                                 |
+| `GLPI_URL`                  | Базовый URL GLPI API                  | `http://glpi-app:80` (Docker) / `http://host:8080` (local) |
+| `GLPI_APP_TOKEN`            | GLPI App-Token (заголовок)            | `GLPI_APP_TOKEN_REDACTED`                      |
+| `GLPI_USER_TOKEN`           | GLPI User Token (query param)         | `GLPI_USER_TOKEN_REDACTED`                     |
+| `BITRIX24_WEBHOOK_URL`      | Bitrix24 webhook URL (без метода)     | `https://b24.example.com/rest/445/y1uz...`      |
+| `BITRIX24_RESPONSIBLE_IDS`  | ID ответственных через запятую        | `70` или `70,71,72`                              |
 
-| Переменная          | Обязательная | По умолчанию      | Описание                   |
-|---------------------|-------------|-------------------|----------------------------|
-| `POSTGRES_SERVER`   | да          | `postgres`        | Хост PostgreSQL            |
-| `POSTGRES_PORT`     | да          | `5432`            | Порт PostgreSQL            |
-| `POSTGRES_DB`       | да          | `integration`     | Имя БД                     |
-| `POSTGRES_USER`     | да          | `integration`     | Пользователь БД            |
-| `POSTGRES_PASSWORD` | **да**      | —                 | Пароль БД (не задан по умолчанию!) |
+### Опциональные (MVP)
 
-### Redis
+| Переменная                       | По умолчанию | Описание                            |
+|----------------------------------|-------------|-------------------------------------|
+| `POSTGRES_SERVER`                | `postgres`  | Хост PostgreSQL                     |
+| `POSTGRES_PORT`                  | `5432`      | Порт PostgreSQL                     |
+| `POSTGRES_DB`                    | `integration` | Имя БД                           |
+| `POSTGRES_USER`                  | `integration` | Пользователь БД                  |
+| `BITRIX24_POLL_INTERVAL_SECONDS` | `60`        | Интервал опроса Bitrix24 (секунды)  |
+| `GLPI_DEFAULT_CATEGORY_ID`       | `1`         | Категория по умолчанию (Инцидент)   |
+| `GLPI_DEFAULT_GROUP_ID`          | `1`         | Группа по умолчанию (IT-поддержка L1) |
+| `GLPI_DEFAULT_ENTITY_ID`         | `2`         | Орг. единица (Департамент IT)       |
+| `APP_HOST`                       | `0.0.0.0`   | Хост Uvicorn                        |
+| `APP_PORT`                       | `8000`      | Порт Uvicorn                        |
+| `DATABASE_URL`                   | —           | URL подключения (переопределяет POSTGRES_*) |
 
-| Переменная    | Обязательная | По умолчанию             | Описание          |
-|---------------|-------------|--------------------------|-------------------|
-| `REDIS_URL`   | да          | `redis://redis:6379/0`   | URL подключения   |
+### Production-only (Phase 2+)
 
-### GLPI
+| Переменная               | Описание                              |
+|--------------------------|---------------------------------------|
+| `REDIS_URL`              | Redis URL (брокер Celery)             |
+| `CELERY_BROKER_URL`      | Celery broker URL                     |
+| `CELERY_RESULT_BACKEND`  | Celery result backend                 |
+| `BITRIX24_USER_ID`       | ID пользователя Bitrix24              |
+| `EMPLOYEE_MAPPING_PATH`  | Путь к маппингу сотрудников           |
+| `WHISPER_MODEL_SIZE`     | Размер модели транскрибации           |
+| `RETRY_BACKOFF_BASE`     | База экспоненты retry                 |
+| `RETRY_BACKOFF_MAX`      | Макс. задержка retry                  |
 
-**MVP (Phase 1) — аутентификация через App-Token:**
+### GLPI OAuth2 (Phase 4, планируется)
 
-| Переменная          | Обязательная | По умолчанию      | Описание                     |
-|---------------------|-------------|-------------------|------------------------------|
-| `GLPI_URL`          | да          | `http://glpi:80`  | Базовый URL GLPI API         |
-| `GLPI_APP_TOKEN`    | **да**      | —                 | GLPI App-Token (заголовок)   |
-| `GLPI_USER_TOKEN`   | **да**      | —                 | GLPI API User Token (Basic Auth, username) |
-
-> **Phase 4 (планируется):** OAuth2-аутентификация через
-> `GLPI_CLIENT_ID`, `GLPI_CLIENT_SECRET`, `GLPI_USERNAME`, `GLPI_PASSWORD`.
-> На данный момент эти переменные не используются.
-
-### Bitrix24
-
-| Переменная             | Обязательная | По умолчанию | Описание                        |
-|------------------------|-------------|--------------|---------------------------------|
-| `BITRIX24_WEBHOOK_URL` | **да**      | —            | Входящий вебхук Bitrix24        |
-| `BITRIX24_USER_ID`     | **да**      | —            | ID пользователя Bitrix24 (ответственный за лиды) |
-
-### Employee Mapping
-
-| Переменная                 | Обязательная | По умолчанию                         | Описание                     |
-|----------------------------|-------------|---------------------------------------|------------------------------|
-| `EMPLOYEE_MAPPING_PATH`    | нет         | `/app/config/employee_mapping.json`   | Путь к файлу маппинга        |
-
-### Whisper (faster-whisper)
-
-| Переменная           | Обязательная | По умолчанию | Описание                                |
-|----------------------|-------------|--------------|-----------------------------------------|
-| `WHISPER_MODEL_SIZE` | нет         | `large-v3`   | Размер модели (tiny/base/small/medium/large-v3) |
-| `WHISPER_DEVICE`     | нет         | `cpu`        | Устройство (cpu / cuda)                 |
-| `WHISPER_COMPUTE_TYPE` | нет       | `int8`       | Тип вычислений (int8 / float16 / float32) |
-| `WHISPER_BATCH_SIZE` | нет         | `8`          | Размер батча при транскрибации          |
-
-### Celery
-
-| Переменная               | Обязательная | По умолчанию             | Описание                  |
-|--------------------------|-------------|--------------------------|---------------------------|
-| `CELERY_BROKER_URL`      | да          | `redis://redis:6379/0`   | Брокер сообщений Celery   |
-| `CELERY_RESULT_BACKEND`  | нет         | `redis://redis:6379/0`   | Бэкенд результатов        |
-
-### Retry
-
-| Переменная           | Обязательная | По умолчанию | Описание                          |
-|----------------------|-------------|--------------|-----------------------------------|
-| `RETRY_BACKOFF_BASE` | нет         | `2`          | Базовый множитель экспоненты      |
-| `RETRY_BACKOFF_MAX`  | нет         | `300`        | Максимальная задержка (секунды)   |
-
-### FastAPI
-
-| Переменная  | Обязательная | По умолчанию | Описание              |
-|-------------|-------------|--------------|-----------------------|
-| `APP_HOST`  | нет         | `0.0.0.0`    | Хост для Uvicorn      |
-| `APP_PORT`  | нет         | `8000`       | Порт для Uvicorn      |
+| Переменная            | Описание                    |
+|-----------------------|-----------------------------|
+| `GLPI_CLIENT_ID`      | OAuth2 Client ID            |
+| `GLPI_CLIENT_SECRET`  | OAuth2 Client Secret        |
+| `GLPI_USERNAME`       | Имя пользователя GLPI      |
+| `GLPI_PASSWORD`       | Пароль пользователя GLPI    |
 
 ## API Endpoints
 
-### Вебхуки
+### MVP (текущие)
+
+```
+GET  /health
+  → 200 {"status": "healthy"}
+  Liveness probe — проверяет что процесс жив.
+
+GET  /ready
+  → 200 {"status": "ready"}
+  → 200 {"status": "unhealthy"}
+  Readiness probe — проверяет подключение к PostgreSQL.
+
+GET  /api/bitrix24/sync/status
+  → 200 {"status": "running", "interval_seconds": 60,
+         "responsible_ids": [70], "next_run": "2025-..."
+  Статус poller'а: интервал, ID ответственных, следующий запуск.
+
+POST /api/bitrix24/sync/trigger
+  → 200 {"status": "completed"}
+  Ручной запуск poll-цикла (немедленно, без ожидания расписания).
+```
+
+### Production (Phase 2+)
 
 ```
 POST /webhook/bitrix/lead
-  Принимает: application/json
-  Тело: объект лида Bitrix24 (name — обязателен, остальные поля опциональны)
-  Idempotency: поле idempotency_key в JSON теле запроса
-  Ответ: 200 {"status": "success", "task_id": "uuid", "glpi_ticket": {...}}
-    — при успешном создании тикета
-    {"status": "duplicate", "task_id": "uuid"}
-    — повторный запрос с тем же idempotency_key (COMPLETED/FAILED)
-    {"status": "in_progress", "task_id": "uuid"}
-    — задача с таким idempotency_key уже выполняется (PENDING/PROCESSING)
-  Ошибки: 422 — некорректный payload (Pydantic validation)
-          500 — ошибка при создании тикета в GLPI
+  Входящий вебхук от Bitrix24 при новом лиде.
+  Idempotency: поле idempotency_key в JSON теле.
+  → 200 {"status": "success", "task_id": "uuid", "glpi_ticket": {...}}
+  → 200 {"status": "duplicate", "task_id": "uuid"}
 
+POST /webhook/mango/call
+  Входящий вебхук от MANGO Office при звонке.
+  → 200 {"status": "success", "task_id": "uuid"}
+
+GET  /tasks/{id}
+  Статус задачи по UUID.
+
+GET  /tasks?status=pending&source=bitrix&limit=50&offset=0
+  Список задач с фильтрацией и пагинацией.
 ```
-
-### Health Check
-
-```
-GET /health
-  Ответ: 200 {"status": "healthy"}
-
-GET /ready
-  Ответ: 200 {"status": "ready"} — БД доступна
-  Ответ: 200 {"status": "unhealthy"} — БД недоступна
-```
-
-### Управление задачами
-
-```
-GET /tasks/{id}
-  _Реализуется в Phase 2 (асинхронная обработка)._
-
-GET /tasks?status=pending&source=bitrix&limit=50&offset=0
-  _Реализуется в Phase 2 (асинхронная обработка)._
-```
-
-> **Примечание:** В MVP Sync Mode эндпоинты `/webhook/mango`, `/tasks/{id}` и
-> `/tasks` не реализованы — они будут добавлены в следующих фазах вместе с
-> Celery-воркером и асинхронной обработкой.
 
 ## Структура базы данных
 
@@ -330,202 +272,280 @@ GET /tasks?status=pending&source=bitrix&limit=50&offset=0
 | Колонка            | Тип                     | Описание                                     |
 |--------------------|-------------------------|----------------------------------------------|
 | `id`               | `UUID` (PK)             | Первичный ключ, `gen_random_uuid()`          |
-| `source`           | `VARCHAR(50)`           | Система-источник (bitrix / mango / glpi)     |
-| `source_id`        | `VARCHAR(255)`          | ID объекта в исходной системе                |
-| `type`             | `VARCHAR(50)`           | Тип задачи (create_ticket, register_call, …) |
-| `payload`          | `JSONB`                 | Входные данные задачи                        |
-| `status`           | `ENUM('pending','processing','completed','failed','cancelled')` | Статус жизненного цикла |
+| `source`           | `VARCHAR(50)`           | Система-источник (`bitrix24`)                |
+| `source_id`        | `VARCHAR(255)`          | ID объекта в исходной системе (ID задачи Bitrix24) |
+| `type`             | `VARCHAR(50)`           | Тип задачи (`create_ticket`)                 |
+| `payload`          | `JSONB`                 | Полные данные задачи из Bitrix24             |
+| `status`           | `ENUM`                  | Статус: `pending`, `processing`, `completed`, `failed`, `cancelled` |
 | `attempts`         | `INTEGER`               | Количество попыток выполнения (по умолч. 0)  |
 | `max_attempts`     | `INTEGER`               | Максимум попыток (по умолч. 3)               |
 | `last_error`       | `TEXT`                  | Сообщение об ошибке последней попытки         |
-| `result`           | `JSONB`                 | Результат успешного выполнения                |
-| `idempotency_key`  | `VARCHAR(255)`          | Ключ идемпотентности (уникален, если задан)   |
-| `worker_id`        | `VARCHAR(100)`          | ID worker'а, владеющего лизеном               |
-| `lease_expires_at` | `TIMESTAMPTZ`           | Время истечения лизена                        |
-| `created_at`       | `TIMESTAMPTZ`           | Дата создания                                 |
-| `updated_at`       | `TIMESTAMPTZ`           | Дата обновления                               |
+| `result`           | `JSONB`                 | Результат (GLPI ticket ID + данные)          |
+| `idempotency_key`  | `VARCHAR(255)`          | Ключ идемпотентности (`b24:{task_id}`)       |
+| `worker_id`        | `VARCHAR(100)`          | ID worker'а (unused в MVP)                   |
+| `lease_expires_at` | `TIMESTAMPTZ`           | Время истечения лизена (unused в MVP)        |
+| `created_at`       | `TIMESTAMPTZ`           | Дата создания                                |
+| `updated_at`       | `TIMESTAMPTZ`           | Дата обновления                              |
 
-**Индексы:**
-
-- `ix_tasks_status` — поиск по статусу
-- `ix_tasks_source` — поиск по источнику
-- `ix_tasks_idempotency_key` — уникальный частичный индекс (`WHERE idempotency_key IS NOT NULL`)
-- `ix_tasks_lease` — поик по `(worker_id, lease_expires_at)` для обработки лизенов
+**Индексы:** `ix_tasks_status`, `ix_tasks_source`, `ix_tasks_idempotency_key` (partial unique), `ix_tasks_lease`.
 
 ### Таблица `task_attempts`
 
-Аппенд-только лог всех попыток выполнения задач.
+Аудит-лог попыток выполнения (append-only). Пока не заполняется в MVP.
 
 | Колонка          | Тип                     | Описание                                   |
 |------------------|-------------------------|--------------------------------------------|
-| `id`             | `INTEGER` (PK)          | Автоинкрементный первичный ключ            |
+| `id`             | `INTEGER` (PK)          | Автоинкремент                              |
 | `task_id`        | `UUID` (FK → tasks.id)  | Ссылка на задачу (CASCADE DELETE)          |
-| `attempt_number` | `INTEGER`               | Номер попытки (начиная с 1)                |
-| `status_before`  | `ENUM(taskstatus)`      | Статус задачи до попытки                   |
-| `status_after`   | `ENUM(taskstatus)`      | Статус задачи после попытки                |
-| `error`          | `TEXT`                  | Сообщение об ошибке (если попытка не удалась) |
-| `started_at`     | `TIMESTAMPTZ`           | Время начала попытки                       |
-| `completed_at`   | `TIMESTAMPTZ`           | Время завершения (NULL = ещё выполняется)  |
-| `metadata`       | `JSONB`                 | Дополнительные данные (worker, retry delay) |
-
-**Индексы:**
-
-- `ix_task_attempts_task_id` — поиск по task_id
+| `attempt_number` | `INTEGER`               | Номер попытки (1-based)                    |
+| `status_before`  | `ENUM(taskstatus)`      | Статус до попытки                          |
+| `status_after`   | `ENUM(taskstatus)`      | Статус после попытки                       |
+| `error`          | `TEXT`                  | Ошибка (если неудача)                      |
+| `started_at`     | `TIMESTAMPTZ`           | Время начала                               |
+| `completed_at`   | `TIMESTAMPTZ`           | Время завершения (NULL = выполняется)      |
+| `metadata`       | `JSONB`                 | Доп. данные (worker, retry delay)          |
 
 ### Таблица `outbox`
 
-Transactional outbox для надёжной публикации сообщений в брокер.
+Transactional outbox. Не используется в MVP, подготовлена для Phase 2 (Celery).
 
-| Колонка         | Тип                     | Описание                                      |
-|-----------------|-------------------------|-----------------------------------------------|
-| `id`            | `UUID` (PK)             | `gen_random_uuid()`                           |
-| `task_id`       | `UUID` (FK → tasks.id)  | Ссылка на задачу (CASCADE DELETE)             |
-| `routing_key`   | `VARCHAR(100)`          | Ключ маршрутизации (напр. `tasks:pending:primary`) |
-| `payload`       | `JSONB`                 | Тело сообщения                                |
-| `created_at`    | `TIMESTAMPTZ`           | Дата создания                                 |
-| `published_at`  | `TIMESTAMPTZ`           | Дата публикации (NULL = не опубликовано)       |
-| `retry_count`   | `INTEGER`               | Количество попыток публикации                 |
-| `last_error`    | `TEXT`                  | Ошибка последней публикации                   |
+### Примечание по enum
 
-**Индексы:**
+PostgreSQL enum `taskstatus` содержит lowercase-значения: `pending`, `processing`,
+`completed`, `failed`, `cancelled`. SQLAlchemy модели используют строковые литералы
+(`SAEnum("pending", "processing", ...)`) вместо Python enum для совместимости с
+asyncpg (см. раздел "Известные проблемы" ниже).
 
-- `ix_outbox_unpublished` — частичный индекс (`WHERE published_at IS NULL`) для быстрого поиска неопубликованных записей
-
-## Retry-механизм
-
-Система использует **Processing Lease** в сочетании с **Exponential Backoff** и **Full Jitter** для надёжной обработки задач.
-
-### Processing Lease
-
-- Каждый worker перед выполнением задачи устанавливает `worker_id` и `lease_expires_at`.
-- Другие worker'ы видят, что задача занята, и пропускают её.
-- Если lease истёк (worker упал), задача считается доступной для повторного взятия.
-- Периодическая задача (Celery Beat) сканирует просроченные лизены и возвращает задачи в очередь.
-
-### Exponential Backoff + Full Jitter
-
-При неудачной попытке вычисляется задержка перед следующей:
-
-```
-delay = min(RETRY_BACKOFF_BASE ** attempt, RETRY_BACKOFF_MAX)
-  jitter = delay * random.random()
-  next_retry = now + jitter
-```
-
-- `RETRY_BACKOFF_BASE = 2` (по умолчанию) → задержки: 1.5с, 3с, 6с, 12с, …
-- `RETRY_BACKOFF_MAX = 300` (5 минут) — потолок задержки
-- Full Jitter предотвращает «Thundering Herd» при одновременном перезапуске множества задач
-- После превышения `max_attempts` задача переходит в статус `failed`
-
-### Логирование попыток
-
-Каждая попытка (успешная или нет) фиксируется в таблице `task_attempts`:
-статус до/после, ошибка, время начала/завершения, метаданные.
-
-## Разработка
-
-### Локальный запуск (без Docker)
-
-```bash
-# 1. Создать виртуальное окружение
-python3.11 -m venv venv
-source venv/bin/activate
-
-# 2. Установить зависимости
-pip install -r requirements.txt
-
-# 3. Запустить PostgreSQL и Redis
-# (через Docker или локально)
-
-# 4. Настроить .env (скопировать из .env.example)
-
-# 5. Применить миграции
-alembic upgrade head
-
-# 6. Запустить API
-uvicorn app.main:app --reload --port 8000
-
-# *Celery worker запускается в Phase 2 (асинхронная обработка)*
-```
-
-### Тесты
-
-```bash
-# Все тесты
-pytest
-
-# С покрытием
-pytest --cov=app --cov-report=term-missing
-
-# Параллельный запуск
-pytest -xvs
-```
-
-### Миграции БД (Alembic)
-
-```bash
-# Создать новую миграцию (авто-генерация)
-alembic revision --autogenerate -m "description"
-
-# Применить миграции
-alembic upgrade head
-
-# Откатить на одну
-alembic downgrade -1
-```
-
-### Линтеры и форматтеры
-
-```bash
-# Форматирование
-black app/ tests/
-
-# Линтер
-ruff check app/ tests/
-
-# Проверка типов
-mypy app/
-```
-
-## Стек технологий
-
-| Компонент            | Технология                                    |
-|----------------------|-----------------------------------------------|
-| Веб-фреймворк        | FastAPI 0.115 + Uvicorn 0.30                  |
-| Очередь задач        | Celery 5.4 + Redis 7                          |
-| База данных          | PostgreSQL 15 + asyncpg                       |
-| ORM                  | SQLAlchemy 2.0 (async)                        |
-| Миграции             | Alembic 1.13                                  |
-| Конфигурация         | Pydantic Settings 2.5                         |
-| Транскрибация        | faster-whisper 1.0 (large-v3)                 |
-| HTTP-клиент          | httpx 0.27                                    |
-| Retry                | tenacity 9.0                                  |
-| Логирование          | loguru 0.7                                    |
-| Мониторинг           | Flower 2.0                                    |
-| Планировщик          | RedBeat 2.2                                   |
-| Тестирование         | pytest 8.3 + pytest-asyncio + pytest-cov      |
-
-## Структура проекта
+## Архитектура кода
 
 ```
 integration-service/
 ├── app/
-│   ├── api/               # FastAPI эндпоинты (вебхуки, management)
-│   ├── config/            # Pydantic Settings (конфигурация)
-│   ├── core/              # Database engine, async session factory
-│   ├── models/            # SQLAlchemy модели (Task, TaskAttempt, Outbox)
-│   ├── services/          # Бизнес-логика (GLPI, Bitrix24, MANGO)
-│   └── worker/            # Celery задачи
-├── alembic/               # Миграции БД
-│   └── versions/          # Файлы миграций
-├── config/                # employee_mapping.json
-├── scripts/               # Вспомогательные скрипты
-├── tests/                 # Тесты
-├── docker-compose.yml     # Оркестрация 6 сервисов
-├── Dockerfile             # Многостадийная сборка (builder → runtime)
-├── requirements.txt       # Python-зависимости
-└── .env.example           # Шаблон переменных окружения
+│   ├── api/
+│   │   └── bitrix.py           # /api/bitrix24/sync/status, /sync/trigger
+│   ├── config/
+│   │   └── settings.py         # Pydantic Settings (переменные окружения)
+│   ├── core/
+│   │   └── database.py         # Async SQLAlchemy engine + session factory
+│   ├── models/
+│   │   ├── base.py             # TimestampMixin (UUID PK, created_at, updated_at)
+│   │   ├── task.py             # Task модель (source, source_id, status, payload)
+│   │   ├── task_attempt.py     # TaskAttempt (аудит-лог попыток)
+│   │   └── outbox.py           # Outbox (transactional outbox, unused в MVP)
+│   ├── services/
+│   │   ├── bitrix.py           # BitrixClient — REST API клиент Bitrix24
+│   │   ├── glpi.py             # GLPIClient — REST API клиент GLPI
+│   │   └── poller.py           # APScheduler poller — опрос Bitrix24 → создание GLPI тикетов
+│   └── main.py                 # FastAPI app, lifespan, health/ready probes
+├── alembic/                    # Миграции БД
+│   └── versions/
+├── config/                     # employee_mapping.json (для Production)
+├── scripts/                    # Вспомогательные скрипты
+├── tests/                      # Тесты
+├── docker-compose.mvp.yml      # MVP: postgres + api (2 контейнера)
+├── docker-compose.yml          # Production: 6 контейнеров
+├── Dockerfile                  # Многостадийная сборка (builder → runtime)
+├── requirements.txt            # Python-зависимости
+└── .env.example                # Шаблон переменных окружения
 ```
+
+## Стек технологий
+
+| Компонент            | MVP                          | Production (будущее)           |
+|----------------------|------------------------------|--------------------------------|
+| Веб-фреймворк       | FastAPI 0.115 + Uvicorn 0.30 | FastAPI 0.115 + Uvicorn 0.30   |
+| Планировщик         | APScheduler 3.10             | Celery 5.4 + RedBeat 2.2       |
+| Брокер задач        | —                            | Redis 7                        |
+| База данных         | PostgreSQL 15 + asyncpg      | PostgreSQL 15 + asyncpg        |
+| ORM                 | SQLAlchemy 2.0 (async)       | SQLAlchemy 2.0 (async)         |
+| Миграции            | Alembic 1.13                 | Alembic 1.13                   |
+| Конфигурация        | Pydantic Settings 2.5        | Pydantic Settings 2.5          |
+| HTTP-клиент         | httpx 0.27 (sync)            | httpx 0.27                     |
+| Логирование         | logging (stdlib)             | loguru 0.7                     |
+| Транскрибация       | —                            | faster-whisper 1.0 (large-v3)  |
+| Мониторинг          | —                            | Flower 2.0                     |
+| Retry               | —                            | tenacity 9.0                   |
+| Тестирование        | pytest 8.3 + pytest-asyncio  | pytest 8.3 + pytest-asyncio    |
+
+## Сервисы
+
+### BitrixClient (`app/services/bitrix.py`)
+
+Синхронный httpx-клиент для Bitrix24 REST API.
+
+- **Аутентификация:** URL-based webhook (`/rest/{user}/{token}/{method}`)
+- **Методы:** `get_tasks(responsible_id, start)`, `get_task(task_id)`
+- **Пагинация:** 50 задач на страницу (`task.ctasks.getlist.json`)
+- **Retry:** 1 попытка на 5xx, sleep 2s на 429 (rate-limit)
+
+### GLPIClient (`app/services/glpi.py`)
+
+Синхронный httpx-клиент для GLPI legacy API (`apirest.php`).
+
+- **Аутентификация:** App-Token (заголовок) + User Token (query param `user_token`)
+- **Важно:** GLPI legacy API **не использует** HTTP Basic Auth. `user_token` передается
+  как query param или в POST body. Basic Auth вызывает ошибку `Unable to extract nonce`.
+- **Методы:** `init_session()`, `create_ticket(name, content, session_token)`, `show_ticket(id)`
+- **Сессии:** GLPI сессии истекают быстро. В MVP poller создаёт новую сессию на каждый poll-цикл.
+
+### Poller (`app/services/poller.py`)
+
+APScheduler-based poller, работающий внутри FastAPI процесса.
+
+- **Расписание:** `interval` mode, каждые `BITRIX24_POLL_INTERVAL_SECONDS` (по умолч. 60s)
+- **Логика:**
+  1. Для каждого `responsible_id` из `BITRIX24_RESPONSIBLE_IDS`
+  2. Постранично загружает задачи из Bitrix24 (50/страница)
+  3. Пропускает закрытые задачи (status 3, 5)
+  4. Проверяет идемпотентность по `source_id` в БД
+  5. Создаёт Task запись (status=`processing`)
+  6. Создаёт GLPI тикет через `GLPIClient.create_ticket()`
+  7. Обновляет Task (status=`completed`, result=GLPI ticket data)
+- **Идемпотентность:** `idempotency_key = "b24:{task_id}"`
+- **Жизненный цикл:** `start_poller()` / `stop_poller()` в lifespan FastAPI
+
+## Деплой на infrastructure
+
+### Текущая конфигурация (MVP)
+
+- **Сервер:** SERVER_IP (Debian 13, Proxmox, 4 vCPU, 8GB RAM, 20GB disk)
+- **Docker-проекты:**
+  - `glpi` (glpi-app, glpi-db, glpi-dbgate, glpi-mailpit, glpi-openldap)
+  - `sla-dashboard` (SLA-мониторинг, SQLite)
+  - `integration-service` (postgres, api) — MVP
+- **Сети:**
+  - `glpi_default` — GLPI контейнеры + integration-api
+  - `integration_default` — integration-api + integration-postgres
+- **Порты:**
+  - GLPI: `:8080` → glpi-app
+  - Integration API: `:8000` → integration-api
+  - Integration PostgreSQL: `:5433` → postgres:5432
+
+### Git hooks
+
+```bash
+# Деплой через SSH
+ssh -i ~/.ssh/SSH_KEY_NAME root@SERVER_IP
+
+# Обновление кода
+cd /opt/integration-service
+git pull origin main
+
+# Пересборка и перезапуск
+docker compose -f docker-compose.mvp.yml build api
+docker compose -f docker-compose.mvp.yml up -d api
+
+# Применение миграций (если есть новые)
+docker exec -e DATABASE_URL='postgresql+asyncpg://integration:integration123@postgres:5432/integration' \
+  integration-api alembic upgrade head
+```
+
+## Известные проблемы и решения
+
+### asyncpg enum serialization
+
+**Проблема:** asyncpg сериализует Python enum как `.name` (UPPERCASE) вместо
+`.value` (lowercase). PostgreSQL enum `taskstatus` ожидает lowercase.
+
+**Ошибка:** `invalid input value for enum taskstatus: "PROCESSING"`
+
+**Решение:** Модели используют строковые литералы вместо Python enum:
+
+```python
+# НЕПРАВИЛЬНО (asyncpg отправит "PROCESSING"):
+status: Mapped[TaskStatus] = mapped_column(SAEnum(TaskStatus, ...))
+
+# ПРАВИЛЬНО (asyncpg отправит "processing"):
+status: Mapped[str] = mapped_column(
+    SAEnum("pending", "processing", "completed", "failed", "cancelled", name="taskstatus")
+)
+```
+
+**См. коммит:** `30feaf4`
+
+### GLPI Basic Auth не работает
+
+**Проблема:** GLPI legacy API (`apirest.php`) не поддерживает HTTP Basic Auth.
+Попытка использовать `httpx.BasicAuth(user_token, "")` вызывает ошибку
+`Unable to extract nonce` (sodium decryption failure).
+
+**Решение:** `user_token` передается как query parameter:
+
+```python
+# НЕПРАВИЛЬНО:
+response = client.get(url, auth=httpx.BasicAuth(user_token, ""))
+
+# ПРАВИЛЬНО:
+response = client.get(url, params={"user_token": user_token})
+```
+
+### GLPI API отключен по умолчанию
+
+GLPI может иметь `enable_api=0` в БД. Нужно включить:
+
+```sql
+UPDATE glpi_configs SET value='1' WHERE context='core' AND name='enable_api';
+```
+
+Также required: создание API-клиента (App-Token) и пользователя с API-токеном
+в GLPI Admin → Setup → API Clients.
+
+## Дорожная карта
+
+### Phase 1 (MVP) — ✅ Выполнено
+
+- [x] Polling Bitrix24 REST API → создание GLPI тикетов
+- [x] Идемпотентность по source_id
+- [x] Health/ready probes
+- [x] Docker Compose deployment
+- [x] Alembic миграции
+- [x] Manual sync trigger API
+
+### Phase 2 (Production) — Планируется
+
+- [ ] **Архитектурный переход:** Polling → Incoming Webhooks
+  - Bitrix24 отправляет вебхук при новом лиде → `POST /webhook/bitrix/lead`
+  - MANGO Office отправляет вебхук при звонке → `POST /webhook/mango/call`
+  - Требуется: reverse proxy (nginx) с SSL для публичного URL
+- [ ] **Celery Worker:** асинхронная обработка задач (GLPI, Bitrix24, Whisper)
+- [ ] **Redis + RedBeat:** брокер задач + планировщик
+- [ ] **Transaction Outbox:** надёжная публикация сообщений
+- [ ] **Retry с exponential backoff:** tenacity + jitter
+- [ ] **Employee Mapping:** маппинг Bitrix24 user → GLPI user/group
+- [ ] **Task Attempts:** аудит-лог каждой попытки
+- [ ] **Flower:** мониторинг Celery workers
+
+### Phase 3 (MANGO Integration) — Планируется
+
+- [ ] Регистрация звонков в Bitrix24 через MANGO REST API
+- [ ] Транскрибация аудиозаписей (faster-whisper)
+- [ ] Привязка транскрипции к тикетам GLPI
+- [ ] MANGO webhook endpoint
+
+### Phase 4 (Production Hardening) — Планируется
+
+- [ ] OAuth2 аутентификация для GLPI
+- [ ] Structured logging (loguru + JSON)
+- [ ] Метрики (Prometheus)
+- [ ] Rate limiting для входящих вебхуков
+- [ ] Circuit breaker для внешних API
+- [ ] Graceful shutdown для Celery workers
+
+## Migration от MVP к Production
+
+При переходе от polling к webhook-архитектуре потребуется:
+
+1. **Reverse proxy** (nginx) с SSL-сертификатом для публичного URL
+2. **Bitrix24:** настроить исходящие вебхуки (CRM → События → Лида)
+3. **Redis + Celery:** добавить в docker-compose.yml
+4. **Обновить docker-compose.yml:** раскомментировать Redis, worker, beat, flower
+5. **Настроить .env:** добавить REDIS_URL, CELERY_*, BITRIX24_USER_ID
+6. **Миграции:** новые поля в tasks (worker_id, lease_expires_at будут использоваться)
+7. **Убрать APScheduler:** заменить на Celery Beat
+8. **API endpoints:** добавить `/webhook/bitrix/lead`, `/webhook/mango/call`
+
+Данные в БД (tasks, task_attempts) совместимы — polling и webhook используют
+одну и ту же модель Task.
 
 ## Лицензия
 
