@@ -375,8 +375,13 @@ integration-service/
 
 - **Аутентификация:** URL-based webhook (`/rest/{user}/{token}/{method}`)
 - **Методы:** `get_tasks(responsible_id, start)`, `get_task(task_id)`
-- **Пагинация:** 50 задач на страницу (`task.ctasks.getlist.json`)
+- **Пагинация:** 50 задач на страницу (`tasks.task.list.json`)
+- **Маппинг полей:** camelCase → SCREAMING_SNAKE (для совместимости с poller)
 - **Retry:** 1 попытка на 5xx, sleep 2s на 429 (rate-limit)
+
+> **Примечание:** `task.ctasks.getlist.json` НЕ поддерживает фильтр
+> `filter[RESPONSIBLE_ID]` и возвращает задачи из всех пользователей.
+> Используйте `tasks.task.list.json` — он корректно фильтрует по `RESPONSIBLE_ID`.
 
 ### GLPIClient (`app/services/glpi.py`)
 
@@ -490,6 +495,25 @@ UPDATE glpi_configs SET value='1' WHERE context='core' AND name='enable_api';
 Также required: создание API-клиента (App-Token) и пользователя с API-токеном
 в GLPI Admin → Setup → API Clients.
 
+### task.ctasks.getlist.json игнорирует фильтр
+
+**Проблема:** Метод `task.ctasks.getlist.json` игнорирует параметр `filter[RESPONSIBLE_ID]`
+и возвращает задачи из всех пользователей Bitrix24.
+
+**Решение:** Используйте `tasks.task.list.json` — он корректно фильтрует по `RESPONSIBLE_ID`.
+
+**Отличия API:**
+
+| | `task.ctasks.getlist.json` | `tasks.task.list.json` |
+|---|---|---|
+| Фильтр | Игнорируется | Работает ✅ |
+| Структура ответа | `result: [...]` | `result: {tasks: [...]}` |
+| Имена полей | SCREAMING_SNAKE | camelCase |
+| Пагинация `next` | Top-level | Top-level |
+| Total | Нет | `result.total` (top-level) |
+
+**См. коммиты:** `975b6d5`, `ddc8d97`
+
 ## Дорожная карта
 
 ### Phase 1 (MVP) — ✅ Выполнено
@@ -500,6 +524,7 @@ UPDATE glpi_configs SET value='1' WHERE context='core' AND name='enable_api';
 - [x] Docker Compose deployment
 - [x] Alembic миграции
 - [x] Manual sync trigger API
+- [x] Корректный метод API (`tasks.task.list.json` вместо `task.ctasks.getlist.json`)
 
 ### Phase 2 (Production) — Планируется
 

@@ -144,7 +144,7 @@ class BitrixClient:
         """Low-level request helper with retry on 5xx and rate-limit handling.
 
         Args:
-            method: Bitrix24 REST method name (e.g. ``task.ctasks.getlist.json``).
+            method: Bitrix24 REST method name (e.g. ``tasks.task.list.json``).
             params: Optional query parameters.
 
         Returns:
