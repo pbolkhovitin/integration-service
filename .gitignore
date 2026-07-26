@@ -54,6 +54,9 @@ Thumbs.db
 # Config
 config/employee_mapping.json
 
+# Temporary token generator (contains secrets)
+.tmp_gen_token.php
+
 # OpenCode / Swarm runtime
 .opencode/
 .pytest_cache/

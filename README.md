@@ -176,8 +176,8 @@ uvicorn app.main:app --reload --port 8000
 |-----------------------------|---------------------------------------|-------------------------------------------------|
 | `POSTGRES_PASSWORD`         | Пароль PostgreSQL                     | `integration123`                                 |
 | `GLPI_URL`                  | Базовый URL GLPI API                  | `http://glpi-app:80` (Docker) / `http://host:8080` (local) |
-| `GLPI_APP_TOKEN`            | GLPI App-Token (заголовок)            | `GLPI_APP_TOKEN_REDACTED`                      |
-| `GLPI_USER_TOKEN`           | GLPI User Token (query param)         | `GLPI_USER_TOKEN_REDACTED`                     |
+| `GLPI_APP_TOKEN`            | GLPI App-Token (заголовок)            | `intg-svc-token-xxxx`                            |
+| `GLPI_USER_TOKEN`           | GLPI User Token (query param)         | `glpi-user-token-xxxx`                           |
 | `BITRIX24_WEBHOOK_URL`      | Bitrix24 webhook URL (без метода)     | `https://b24.example.com/rest/445/y1uz...`      |
 | `BITRIX24_RESPONSIBLE_IDS`  | ID ответственных через запятую        | `70` или `70,71,72`                              |
 
