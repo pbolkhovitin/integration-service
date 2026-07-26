@@ -408,7 +408,7 @@ APScheduler-based poller, работающий внутри FastAPI процес
 
 ### Текущая конфигурация (MVP)
 
-- **Сервер:** SERVER_IP (Debian 13, Proxmox, 4 vCPU, 8GB RAM, 20GB disk)
+- **Сервер:** VM в Proxmox (Debian 13, 4 vCPU, 8GB RAM, 20GB disk)
 - **Docker-проекты:**
   - `glpi` (glpi-app, glpi-db, glpi-dbgate, glpi-mailpit, glpi-openldap)
   - `sla-dashboard` (SLA-мониторинг, SQLite)
@@ -425,7 +425,7 @@ APScheduler-based poller, работающий внутри FastAPI процес
 
 ```bash
 # Деплой через SSH
-ssh -i ~/.ssh/SSH_KEY_NAME root@SERVER_IP
+ssh -i ~/.ssh/<your-key> root@<server-ip>
 
 # Обновление кода
 cd /opt/integration-service
