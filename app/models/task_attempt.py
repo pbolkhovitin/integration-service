@@ -8,7 +8,6 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models.task import TaskStatus
 
 
 class TaskAttempt(Base):
@@ -36,12 +35,20 @@ class TaskAttempt(Base):
     )
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    status_before: Mapped[TaskStatus] = mapped_column(
-        SAEnum(TaskStatus, name="taskstatus", create_constraint=True),
+    status_before: Mapped[str] = mapped_column(
+        SAEnum(
+            "pending", "processing", "completed", "failed", "cancelled",
+            name="taskstatus",
+            create_constraint=True,
+        ),
         nullable=False,
     )
-    status_after: Mapped[TaskStatus] = mapped_column(
-        SAEnum(TaskStatus, name="taskstatus", create_constraint=True),
+    status_after: Mapped[str] = mapped_column(
+        SAEnum(
+            "pending", "processing", "completed", "failed", "cancelled",
+            name="taskstatus",
+            create_constraint=True,
+        ),
         nullable=False,
     )
 

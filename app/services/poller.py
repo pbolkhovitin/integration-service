@@ -167,7 +167,7 @@ async def _process_task(
         )
         existing = result.scalar_one_or_none()
         if existing is not None:
-            if existing.status.value == "completed":
+            if existing.status == "completed":
                 return "skipped"
             # If failed, we could retry, but for MVP skip
             return "skipped"

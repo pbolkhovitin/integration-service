@@ -46,10 +46,14 @@ class Task(Base, TimestampMixin):
     type: Mapped[str] = mapped_column(String(50), nullable=False)
     payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    status: Mapped[TaskStatus] = mapped_column(
-        SAEnum(TaskStatus, name="taskstatus", create_constraint=True),
+    status: Mapped[str] = mapped_column(
+        SAEnum(
+            "pending", "processing", "completed", "failed", "cancelled",
+            name="taskstatus",
+            create_constraint=True,
+        ),
         nullable=False,
-        default=TaskStatus.PENDING,
+        default="pending",
         server_default=func.text("'pending'"),
     )
 
