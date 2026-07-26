@@ -56,6 +56,19 @@ class BitrixClient:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
+    # Map camelCase fields from tasks.task.list to SCREAMING_SNAKE
+    # used by the poller (_process_task, _build_ticket_content).
+    _FIELD_MAP: dict[str, str] = {
+        "id": "ID",
+        "title": "TITLE",
+        "description": "DESCRIPTION",
+        "status": "STATUS",
+        "createdDate": "CREATED_DATE",
+        "deadline": "DEADLINE",
+        "responsibleId": "RESPONSIBLE_ID",
+        "createdBy": "CREATED_BY",
+    }
+
     def get_tasks(
         self,
         responsible_id: int,
@@ -64,8 +77,12 @@ class BitrixClient:
     ) -> dict[str, Any]:
         """Get list of tasks from Bitrix24 with pagination.
 
-        Uses ``task.ctasks.getlist.json`` endpoint with filter by
+        Uses ``tasks.task.list.json`` endpoint with filter by
         responsible_id. Returns 50 tasks per page.
+
+        Note: ``task.ctasks.getlist.json`` does NOT honour the
+        ``filter[RESPONSIBLE_ID]`` parameter and returns tasks from
+        arbitrary users. ``tasks.task.list.json`` filters correctly.
 
         Args:
             responsible_id: Bitrix24 user ID to filter tasks.
@@ -82,13 +99,22 @@ class BitrixClient:
         if order:
             params["order"] = order
 
-        result = self._call("task.ctasks.getlist.json", params=params)
+        result = self._call("tasks.task.list.json", params=params)
 
-        # Bitrix24 returns {"result": [...], "next": int_or_0}
-        tasks = result.get("result", [])
-        next_offset = result.get("next", 0)
+        # tasks.task.list returns:
+        # {"result": {"tasks": [...], "next": N, "total": N}, "next": N, "total": N}
+        result_data = result.get("result", {})
+        raw_tasks = result_data.get("tasks", [])
+        next_offset = result_data.get("next", 0)
+
+        # Map camelCase → SCREAMING_SNAKE for poller compatibility
+        tasks = [self._map_task_fields(t) for t in raw_tasks]
 
         return {"tasks": tasks, "next": next_offset}
+
+    def _map_task_fields(self, task: dict[str, Any]) -> dict[str, Any]:
+        """Map camelCase field names from tasks.task.list to SCREAMING_SNAKE."""
+        return {self._FIELD_MAP.get(k, k.upper()): v for k, v in task.items()}
 
     def get_task(self, task_id: int) -> dict[str, Any]:
         """Get a single task by ID.
