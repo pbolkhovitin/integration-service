@@ -167,6 +167,42 @@ class GLPIClient:
         )
 
     # ------------------------------------------------------------------
+    # Ticket update
+    # ------------------------------------------------------------------
+
+    def update_ticket(
+        self,
+        ticket_id: int,
+        session_token: str,
+        **fields: Any,
+    ) -> dict[str, Any]:
+        """Update an existing GLPI ticket.
+
+        Sends a ``PUT {base_url}/apirest.php/Ticket/{ticket_id}`` request.
+
+        Args:
+            ticket_id: Numeric ticket identifier.
+            session_token: A valid session token.
+            **fields: Fields to update (e.g. ``status=5``).
+
+        Returns:
+            Parsed JSON response as a dictionary.
+
+        Raises:
+            RuntimeError: On HTTP failure.
+        """
+        url = f"{self._base_url}/apirest.php/Ticket/{ticket_id}"
+        payload: dict[str, dict[str, Any]] = {"input": fields}
+        logger.debug("PUT %s — updating ticket %d: %s", url, ticket_id, fields)
+
+        return self._call(
+            method="PUT",
+            url=url,
+            json_body=payload,
+            session_token=session_token,
+        )
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 

@@ -1,10 +1,14 @@
-"""Bitrix24 sync API — status and manual trigger endpoints."""
+"""Bitrix24 sync API — status, manual trigger, and cleanup endpoints."""
 
 import logging
 
 from fastapi import APIRouter
 
-from app.services.poller import get_poller_status, _poll_bitrix24
+from app.services.poller import (
+    get_poller_status,
+    _poll_bitrix24,
+    cleanup_orphaned_tasks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,3 +31,15 @@ async def sync_trigger() -> dict:
     logger.info("Manual sync triggered via API")
     await _poll_bitrix24()
     return {"status": "completed"}
+
+
+@router.post("/sync/cleanup")
+async def sync_cleanup() -> dict:
+    """Detect tasks deleted in Bitrix24 and close their GLPI tickets.
+
+    Fetches all current tasks from Bitrix24, compares against our DB,
+    and updates GLPI ticket status to 'solved' for orphaned records.
+    """
+    logger.info("Manual cleanup triggered via API")
+    result = await cleanup_orphaned_tasks()
+    return result

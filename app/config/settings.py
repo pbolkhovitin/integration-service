@@ -24,7 +24,11 @@ class Settings(BaseSettings):
     GLPI_DEFAULT_GROUP_ID: int = 1  # IT-поддержка L1
     GLPI_DEFAULT_ENTITY_ID: int = 2  # Департамент IT
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
     @property
     def responsible_ids(self) -> list[int]:

@@ -136,6 +136,26 @@ class BitrixClient:
             return task_data["task"]
         return task_data
 
+    def delete_task(self, task_id: int) -> dict[str, Any]:
+        """Delete a task in Bitrix24.
+
+        Uses ``tasks.task.delete.json`` endpoint.
+
+        Args:
+            task_id: Bitrix24 task ID.
+
+        Returns:
+            Dict with ``task: true`` on success.
+
+        Raises:
+            RuntimeError: On HTTP failure.
+        """
+        result = self._call(
+            "tasks.task.delete.json",
+            params={"TASK_ID": task_id},
+        )
+        return result.get("result", {})
+
     def _call(
         self,
         method: str,
