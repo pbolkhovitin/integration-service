@@ -137,6 +137,14 @@ async def _poll_for_user(
             if task_id:
                 fetched_ids.add(task_id)
 
+            # Fetch tags (separate legacy call, not in task.list response)
+            try:
+                tags = bitrix_client.get_task_tags(int(task_id))
+                task_data["TAGS"] = tags
+            except Exception as exc:
+                logger.warning("Failed to fetch tags for task %s: %s", task_id, exc)
+                task_data["TAGS"] = []
+
             result = await _process_task(
                 bitrix_client=bitrix_client,
                 glpi_client=glpi_client,
@@ -276,10 +284,18 @@ def _build_ticket_content(task_data: dict) -> str:
         f"Deadline: {task_data.get('DEADLINE', 'N/A')}",
         f"Responsible ID: {task_data.get('RESPONSIBLE_ID', 'N/A')}",
         f"Created by ID: {task_data.get('CREATED_BY', 'N/A')}",
+    ]
+
+    # Include tags if present
+    tags = task_data.get("TAGS", [])
+    if tags:
+        lines.append(f"Tags: {', '.join(tags)}")
+
+    lines.extend([
         "",
         "Description:",
         task_data.get("DESCRIPTION", "N/A"),
-    ]
+    ])
     return "\n".join(lines)
 
 

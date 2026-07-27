@@ -136,6 +136,28 @@ class BitrixClient:
             return task_data["task"]
         return task_data
 
+    def get_task_tags(self, task_id: int) -> list[str]:
+        """Get tags for a specific task.
+
+        Uses legacy ``task.item.gettags.json`` endpoint.
+        Note: ``tasks.task.get`` does NOT return tags — they require
+        a separate call via this legacy method.
+
+        Args:
+            task_id: Bitrix24 task ID.
+
+        Returns:
+            List of tag strings (e.g. ``["Указать категорию!", "Приоритет"]``).
+        """
+        result = self._call(
+            "task.item.gettags.json",
+            params={"TASK_ID": task_id},
+        )
+        tags = result.get("result", [])
+        if isinstance(tags, list):
+            return [str(t) for t in tags]
+        return []
+
     def delete_task(self, task_id: int) -> dict[str, Any]:
         """Delete a task in Bitrix24.
 
