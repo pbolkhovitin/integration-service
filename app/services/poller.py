@@ -137,14 +137,6 @@ async def _poll_for_user(
             if task_id:
                 fetched_ids.add(task_id)
 
-            # Fetch tags (separate legacy call, not in task.list response)
-            try:
-                tags = bitrix_client.get_task_tags(int(task_id))
-                task_data["TAGS"] = tags
-            except Exception as exc:
-                logger.warning("Failed to fetch tags for task %s: %s", task_id, exc)
-                task_data["TAGS"] = []
-
             result = await _process_task(
                 bitrix_client=bitrix_client,
                 glpi_client=glpi_client,
@@ -214,6 +206,14 @@ async def _process_task(
             return "skipped"
 
     # Build GLPI ticket content
+    # Fetch tags only for new tasks (not in DB yet) to avoid excess API calls
+    try:
+        tags = bitrix_client.get_task_tags(int(task_id))
+        task_data["TAGS"] = tags
+    except Exception as exc:
+        logger.warning("Failed to fetch tags for task %s: %s", task_id, exc)
+        task_data["TAGS"] = []
+
     content = _build_ticket_content(task_data)
 
     # Create Task record first (for idempotency)
