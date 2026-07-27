@@ -283,6 +283,28 @@ def _build_ticket_content(task_data: dict) -> str:
     return "\n".join(lines)
 
 
+def _extract_glpi_ticket_id(task: Task) -> int | None:
+    """Extract GLPI ticket ID from a Task record's result field.
+
+    The result can be:
+    - A list: [{"id": 123, "message": "..."}] (from create_ticket)
+    - A dict: {"id": 123} or {"tickets_id": 123}
+    - None or empty
+    """
+    if not task.result:
+        return None
+
+    if isinstance(task.result, list) and task.result:
+        first = task.result[0]
+        if isinstance(first, dict):
+            return first.get("id")
+
+    if isinstance(task.result, dict):
+        return task.result.get("id") or task.result.get("tickets_id")
+
+    return None
+
+
 async def _reconcile_deletions(
     bitrix_client: BitrixClient,
     glpi_client: GLPIClient,
@@ -343,10 +365,7 @@ async def _reconcile_deletions(
     closed_count = 0
     for task in orphans:
         # Extract GLPI ticket ID from task.result
-        glpi_ticket_id = None
-        if task.result and isinstance(task.result, dict):
-            # result stores the ticket ID as returned by create_ticket
-            glpi_ticket_id = task.result.get("id") or task.result.get("tickets_id")
+        glpi_ticket_id = _extract_glpi_ticket_id(task)
 
         if not glpi_ticket_id:
             logger.warning(
@@ -444,9 +463,7 @@ async def cleanup_orphaned_tasks() -> dict:
 
         closed = 0
         for task in orphans:
-            glpi_id = None
-            if task.result and isinstance(task.result, dict):
-                glpi_id = task.result.get("id") or task.result.get("tickets_id")
+            glpi_id = _extract_glpi_ticket_id(task)
 
             if glpi_id:
                 try:
