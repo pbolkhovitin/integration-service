@@ -115,6 +115,10 @@ def mock_glpi_client():
 
 @pytest.fixture(autouse=True)
 def patch_to_thread():
-    """Run ``asyncio.to_thread`` synchronously (no real OS threads)."""
-    with patch("app.api.bitrix.asyncio.to_thread", side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)):
+    """Run ``asyncio.to_thread`` synchronously (no real OS threads).
+
+    ``asyncio.to_thread`` is called inside ``app.services.poller``
+    (not ``app.api.bitrix``), so the patch target is the poller module.
+    """
+    with patch("app.services.poller.asyncio.to_thread", side_effect=lambda fn, *args, **kwargs: fn(*args, **kwargs)):
         yield

@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     BITRIX24_POLL_INTERVAL_SECONDS: int = 60
     BITRIX24_RESPONSIBLE_IDS: str = ""  # comma-separated, e.g. "70,71,72"
 
+    # Reverse sync (GLPI → Bitrix24) for test mode
+    TEST_MODE: bool = True
+    TEST_TASK_IDS: str = "35591,35633"  # comma-separated test task IDs
+
     # GLPI defaults for ticket creation
     GLPI_DEFAULT_CATEGORY_ID: int = 1  # Инцидент
     GLPI_DEFAULT_GROUP_ID: int = 1  # IT-поддержка L1
@@ -36,6 +40,13 @@ class Settings(BaseSettings):
         if not self.BITRIX24_RESPONSIBLE_IDS:
             return []
         return [int(x.strip()) for x in self.BITRIX24_RESPONSIBLE_IDS.split(",") if x.strip()]
+
+    @property
+    def test_task_ids(self) -> list[int]:
+        """Parse comma-separated test task IDs into a list."""
+        if not self.TEST_TASK_IDS:
+            return []
+        return [int(x.strip()) for x in self.TEST_TASK_IDS.split(",") if x.strip()]
 
 
 settings = Settings()

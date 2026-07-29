@@ -178,16 +178,60 @@ class BitrixClient:
         )
         return result.get("result", {})
 
+    def update_task_status(self, task_id: int, status: int) -> dict[str, Any]:
+        """Update a Bitrix24 task status.
+
+        Uses ``tasks.task.update.json`` endpoint with a JSON body.
+
+        Args:
+            task_id: Bitrix24 task ID.
+            status: Target status value (e.g. ``5`` for completed).
+
+        Returns:
+            The updated task dict from ``result.get("task", {})``.
+
+        Raises:
+            RuntimeError: On HTTP failure.
+        """
+        result = self._call(
+            "tasks.task.update.json",
+            json_body={"id": task_id, "fields": {"STATUS": status}},
+        )
+        return result.get("result", {}).get("task", {})
+
+    def add_comment(self, task_id: int, message: str) -> dict[str, Any]:
+        """Add a comment to a Bitrix24 task.
+
+        Uses ``tasks.task.comment.add.json`` endpoint with a JSON body.
+
+        Args:
+            task_id: Bitrix24 task ID.
+            message: Comment text.
+
+        Returns:
+            The API result from ``result.get("result", {})``.
+
+        Raises:
+            RuntimeError: On HTTP failure.
+        """
+        result = self._call(
+            "tasks.task.comment.add.json",
+            json_body={"taskId": task_id, "fields": {"POST_MESSAGE": message}},
+        )
+        return result.get("result", {})
+
     def _call(
         self,
         method: str,
         params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
     ) -> Any:
         """Low-level request helper with retry on 5xx and rate-limit handling.
 
         Args:
             method: Bitrix24 REST method name (e.g. ``tasks.task.list.json``).
             params: Optional query parameters.
+            json_body: Optional JSON body for POST requests.
 
         Returns:
             Parsed JSON response.
@@ -200,7 +244,10 @@ class BitrixClient:
 
         for attempt in range(retries + 1):
             try:
-                response = self._client.get(url, params=params)
+                if json_body is not None:
+                    response = self._client.post(url, json=json_body)
+                else:
+                    response = self._client.get(url, params=params)
             except httpx.RequestError as exc:
                 if attempt < retries:
                     logger.warning(

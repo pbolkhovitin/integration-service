@@ -9,6 +9,10 @@ from app.services.poller import (
     _poll_bitrix24,
     cleanup_orphaned_tasks,
 )
+from app.services.reverse_sync import (
+    get_reverse_sync_status,
+    reverse_sync_test_tasks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,4 +46,23 @@ async def sync_cleanup() -> dict:
     """
     logger.info("Manual cleanup triggered via API")
     result = await cleanup_orphaned_tasks()
+    return result
+
+
+@router.get("/sync/reverse-status")
+async def reverse_sync_status() -> dict:
+    """Get reverse sync configuration status."""
+    return get_reverse_sync_status()
+
+
+@router.post("/sync/reverse-test")
+async def reverse_sync_trigger() -> dict:
+    """Manually trigger reverse sync for test tasks.
+
+    Checks GLPI tickets for status changes and new followups,
+    then updates Bitrix24 tasks accordingly.
+    Only affects whitelisted test task IDs when TEST_MODE=True.
+    """
+    logger.info("Manual reverse sync triggered via API")
+    result = await reverse_sync_test_tasks()
     return result

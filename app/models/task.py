@@ -85,3 +85,9 @@ class Task(Base, TimestampMixin):
         DateTime(timezone=True),
         nullable=True,
     )
+    last_glpi_status: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, default=None
+    )
+    last_glpi_followup_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )

@@ -203,6 +203,43 @@ class GLPIClient:
         )
 
     # ------------------------------------------------------------------
+    # Ticket followups
+    # ------------------------------------------------------------------
+
+    def get_ticket_followups(
+        self,
+        ticket_id: int,
+        session_token: str,
+    ) -> list[dict[str, Any]]:
+        """Get ITIL followups for a GLPI ticket.
+
+        Sends a ``GET {base_url}/apirest.php/Ticket/{ticket_id}/ITILFollowup`` request.
+
+        Args:
+            ticket_id: Numeric ticket identifier.
+            session_token: A valid session token.
+
+        Returns:
+            List of followup dicts, each with ``id``, ``content``,
+            ``date``, ``users_id``, etc.
+
+        Raises:
+            RuntimeError: On HTTP failure.
+        """
+        url = f"{self._base_url}/apirest.php/Ticket/{ticket_id}/ITILFollowup"
+        logger.debug("GET %s — fetching followups for ticket %d", url, ticket_id)
+
+        result = self._call(
+            method="GET", url=url, session_token=session_token
+        )
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            # GLPI may return {"data": [...], "totalcount": N}
+            return result.get("data", [])
+        return []
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
