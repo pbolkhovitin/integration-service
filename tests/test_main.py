@@ -177,7 +177,7 @@ class TestReadyEndpoint:
         assert response.json() == {"status": "unhealthy"}
 
     @pytest.mark.asyncio
-    async def test_ready_content_type_is_json(self):
+    async def test_ready_content_type_is_json(self, monkeypatch):
         """Response content type is application/json regardless of DB state."""
         import app.core.database as db_mod
 

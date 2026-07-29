@@ -2,7 +2,7 @@
 
 Сервис для синхронизации данных между **Bitrix24**, **GLPI** и **MANGO Office**.
 
-**Текущий статус:** MVP — опрос Bitrix24 REST API → создание тикетов в GLPI.
+**Текущий статус:** MVP — опрос Bitrix24 REST API → создание тикетов в GLPI + обратная синхронизация статусов и комментариев (GLPI → Bitrix24, test mode).
 
 ## Поток данных (MVP — polling mode)
 
@@ -35,6 +35,10 @@
 
 Два контейнера. Без Redis, Celery, Flower. Poller опрашивает Bitrix24 каждые N
 секунд и создает тикеты в GLPI синхронно внутри AsyncIO.
+
+Обратная синхронизация (GLPI → Bitrix24) работает в test mode для whitelist-задач:
+отслеживает изменение статуса и новые followup-комментарии в GLPI, обновляет
+Bitrix24 задачи через REST API.
 
 ### Production (будущее) — Webhook + Celery
 
@@ -196,6 +200,8 @@ uvicorn app.main:app --reload --port 8000
 | `APP_HOST`                       | `0.0.0.0`   | Хост Uvicorn                        |
 | `APP_PORT`                       | `8000`      | Порт Uvicorn                        |
 | `DATABASE_URL`                   | —           | URL подключения (переопределяет POSTGRES_*) |
+| `TEST_MODE`                      | `True`      | Включить reverse sync (GLPI→Bitrix24) |
+| `TEST_TASK_IDS`                  | `35591,35633` | ID задач для reverse sync (через запятую) |
 
 ### Production-only (Phase 2+)
 
@@ -241,6 +247,20 @@ GET  /api/bitrix24/sync/status
 POST /api/bitrix24/sync/trigger
   → 200 {"status": "completed"}
   Ручной запуск poll-цикла (немедленно, без ожидания расписания).
+
+POST /api/bitrix24/sync/cleanup
+  → 200 {"bitrix24_tasks_fetched": 134, "db_tasks_total": 5, ...
+  Детектит задачи, удалённые в Bitrix24, и закрывает (status=5 solved)
+  связанные тикеты в GLPI.
+
+GET  /api/bitrix24/sync/reverse-status
+  → 200 {"test_mode": true, "test_task_ids": [35591, 35633], "active": true}
+  Статус reverse sync: включён ли test mode, какие ID задач отслеживаются.
+
+POST /api/bitrix24/sync/reverse-test
+  → 200 {"checked": 2, "status_updated": 1, "comments_sent": 3, ...}
+  Ручной запуск обратной синхронизации (GLPI статусы → Bitrix24).
+  Работает только для whitelist-задач при TEST_MODE=True.
 ```
 
 ### Production (Phase 2+)
@@ -284,6 +304,8 @@ GET  /tasks?status=pending&source=bitrix&limit=50&offset=0
 | `idempotency_key`  | `VARCHAR(255)`          | Ключ идемпотентности (`b24:{task_id}`)       |
 | `worker_id`        | `VARCHAR(100)`          | ID worker'а (unused в MVP)                   |
 | `lease_expires_at` | `TIMESTAMPTZ`           | Время истечения лизена (unused в MVP)        |
+| `last_glpi_status` | `VARCHAR(50)`           | Последний известный статус GLPI (reverse sync) |
+| `last_glpi_followup_id` | `INTEGER`          | ID последнего обработанного followup в GLPI (reverse sync) |
 | `created_at`       | `TIMESTAMPTZ`           | Дата создания                                |
 | `updated_at`       | `TIMESTAMPTZ`           | Дата обновления                              |
 
@@ -322,7 +344,7 @@ asyncpg (см. раздел "Известные проблемы" ниже).
 integration-service/
 ├── app/
 │   ├── api/
-│   │   └── bitrix.py           # /api/bitrix24/sync/status, /sync/trigger
+│   │   └── bitrix.py           # /api/bitrix24/sync/* — status, trigger, cleanup, reverse-status, reverse-test
 │   ├── config/
 │   │   └── settings.py         # Pydantic Settings (переменные окружения)
 │   ├── core/
@@ -335,7 +357,8 @@ integration-service/
 │   ├── services/
 │   │   ├── bitrix.py           # BitrixClient — REST API клиент Bitrix24
 │   │   ├── glpi.py             # GLPIClient — REST API клиент GLPI
-│   │   └── poller.py           # APScheduler poller — опрос Bitrix24 → создание GLPI тикетов
+│   │   ├── poller.py           # APScheduler poller — опрос Bitrix24 → создание GLPI тикетов
+│   │   └── reverse_sync.py     # Обратная синхронизация GLPI→Bitrix24 (status + followups)
 │   └── main.py                 # FastAPI app, lifespan, health/ready probes
 ├── alembic/                    # Миграции БД
 │   └── versions/
@@ -374,7 +397,14 @@ integration-service/
 Синхронный httpx-клиент для Bitrix24 REST API.
 
 - **Аутентификация:** URL-based webhook (`/rest/{user}/{token}/{method}`)
-- **Методы:** `get_tasks(responsible_id, start)`, `get_task(task_id)`
+- **Методы:**
+  - `get_tasks(responsible_id, start)` — список задач с пагинацией
+  - `get_task(task_id)` — одна задача по ID
+  - `get_task_tags(task_id)` — теги задачи (legacy `task.item.gettags.json`)
+  - `delete_task(task_id)` — удаление задачи
+  - `update_task_status(task_id, status)` — обновление статуса
+  - `add_comment(task_id, message)` — добавление комментария
+  - `update_task_description(task_id, description)` — описание (fallback для задач без forumTopicId)
 - **Пагинация:** 50 задач на страницу (`tasks.task.list.json`)
 - **Маппинг полей:** camelCase → SCREAMING_SNAKE (для совместимости с poller)
 - **Retry:** 1 попытка на 5xx, sleep 2s на 429 (rate-limit)
@@ -390,7 +420,14 @@ integration-service/
 - **Аутентификация:** App-Token (заголовок) + User Token (query param `user_token`)
 - **Важно:** GLPI legacy API **не использует** HTTP Basic Auth. `user_token` передается
   как query param или в POST body. Basic Auth вызывает ошибку `Unable to extract nonce`.
-- **Методы:** `init_session()`, `create_ticket(name, content, session_token)`, `show_ticket(id)`
+- **Методы:**
+  - `init_session()` — инициализация сессии, возвращает `session_token`
+  - `create_ticket(name, content, session_token)` — создание тикета-инцидента
+  - `show_ticket(ticket_id, session_token)` — получение тикета по ID
+  - `update_ticket(ticket_id, session_token, **fields)` — обновление полей тикета
+    (используется для закрытия orphan-тикетов при reconciliation)
+  - `get_ticket_followups(ticket_id, session_token)` — ITIL followup-комментарии
+    (используется reverse sync для синхронизации комментариев в Bitrix24)
 - **Сессии:** GLPI сессии истекают быстро. В MVP poller создаёт новую сессию на каждый poll-цикл.
 
 ### Poller (`app/services/poller.py`)
@@ -407,7 +444,39 @@ APScheduler-based poller, работающий внутри FastAPI процес
   6. Создаёт GLPI тикет через `GLPIClient.create_ticket()`
   7. Обновляет Task (status=`completed`, result=GLPI ticket data)
 - **Идемпотентность:** `idempotency_key = "b24:{task_id}"`
+- **Reconciliation:** после обработки всех задач проверяет, какие ранее
+  синхронизированные задачи пропали из Bitrix24 (удалены), и закрывает
+  соответствующие тикеты GLPI (status=5, решено). Safety-порог:
+  минимум 10 задач за цикл — иначе reconciliation пропускается
+  (защита от ложных срабатываний при API-ошибке).
 - **Жизненный цикл:** `start_poller()` / `stop_poller()` в lifespan FastAPI
+
+### Кодовая архитектура (дополнение)
+
+#### Reverse Sync (`app/services/reverse_sync.py`)
+
+Обратная синхронизация — GLPI → Bitrix24. Работает **только** в test mode
+для whitelist-задач (ID из `TEST_TASK_IDS`).
+
+- **Механизм:**
+  1. Читает из БД записи Task с source='bitrix24' и matching source_id
+  2. Извлекает ID GLPI-тикета из поля `result` (поддерживает list и dict-форматы)
+  3. Инициирует сессию GLPI
+  4. Запрашивает текущий статус тикета и ITIL followup-комментарии
+  5. Если статус изменился → обновляет Bitrix24 задачу через `update_task_status()`
+  6. Если появились новые followup'ы → добавляет их в описание Bitrix24 задачи
+     через `update_task_description()`
+  7. Запоминает последние `last_glpi_status` и `last_glpi_followup_id` в БД
+- **Маппинг статусов:** `{1→1 (new→open), 2→2 (assigned→pending), 3→4 (hold→frozen),
+  4→3 (resolved→closed), 5→5 (solved→completed), 6→6 (cancelled→deferred)}`
+- **Description-append для задач без forumTopicId:** если у Bitrix24-задачи
+  `forumTopicId=None`, то `tasks.task.comment.add` молча не срабатывает.
+  Вместо комментариев reverse sync дописывает текст followup'ов в
+  `DESCRIPTION` задачи через `tasks.task.update`. Максимальная длина —
+  60000 символов (ограничение Bitrix24 TEXT). Отдельные followup'ы
+  длиннее 2000 символов обрезаются.
+- **API endpoints:** `GET /api/bitrix24/sync/reverse-status`,
+  `POST /api/bitrix24/sync/reverse-test`
 
 ## Деплой на infrastructure
 
@@ -525,6 +594,10 @@ UPDATE glpi_configs SET value='1' WHERE context='core' AND name='enable_api';
 - [x] Alembic миграции
 - [x] Manual sync trigger API
 - [x] Корректный метод API (`tasks.task.list.json` вместо `task.ctasks.getlist.json`)
+- [x] Reverse sync (GLPI → Bitrix24): статусы и followup'ы в test mode
+- [x] Reconciliation: авто-закрытие GLPI тикетов при удалении задачи в Bitrix24
+- [x] Description-append для задач без forumTopicId
+- [x] 80 pytest-тестов для reverse sync
 
 ### Phase 2 (Production) — Планируется
 
