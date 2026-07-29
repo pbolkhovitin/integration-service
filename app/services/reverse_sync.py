@@ -216,26 +216,51 @@ async def _sync_one_task(
             mapped_status,
         )
 
-    # --- FOLLOWUP SYNC ---
+    # --- FOLLOWUP SYNC (description append for forumTopicId=None tasks) ---
     last_followup_id: int = task.last_glpi_followup_id or 0
     max_followup_id: int = last_followup_id
     new_followups = [
         f for f in followups if f.get("id", 0) > last_followup_id
     ]
 
-    for fu in new_followups:
-        fu_id = fu.get("id", 0)
-        fu_date = fu.get("date", "unknown date")
-        fu_content = fu.get("content", "")
-        message = f"From GLPI ({fu_date}): {fu_content}"
-        await asyncio.to_thread(
-            bitrix_client.add_comment,
-            task_id,
-            message,
+    if new_followups:
+        # Get current Bitrix24 task description
+        b24_task = await asyncio.to_thread(
+            bitrix_client.get_task, task_id,
         )
-        summary["comments_sent"] += 1
-        if fu_id > max_followup_id:
-            max_followup_id = fu_id
+        current_desc = b24_task.get("DESCRIPTION") or ""
+
+        # Append all new followups to description
+        updated_desc = current_desc
+        for fu in new_followups:
+            fu_id = fu.get("id", 0)
+            fu_date = fu.get("date", "unknown date")
+            fu_content = fu.get("content", "")
+            # Truncate very long content (Bitrix24 description has limits)
+            if len(fu_content) > 2000:
+                fu_content = fu_content[:2000] + "..."
+            separator = "\n\n" if updated_desc else ""
+            updated_desc += f"{separator}[GLPI {fu_date}] {fu_content}"
+            if fu_id > max_followup_id:
+                max_followup_id = fu_id
+
+        # Cap total description length to stay within Bitrix24 TEXT limit (~65KB)
+        MAX_DESC_LENGTH = 60000
+        if len(updated_desc) > MAX_DESC_LENGTH:
+            updated_desc = updated_desc[:MAX_DESC_LENGTH] + "\n\n... [truncated]"
+
+        # Write back once (single API call for all followups)
+        await asyncio.to_thread(
+            bitrix_client.update_task_description,
+            task_id,
+            updated_desc,
+        )
+        summary["comments_sent"] += len(new_followups)
+        logger.info(
+            "Reverse sync: appended %d followups to Bitrix24 task %s description",
+            len(new_followups),
+            task_id,
+        )
 
     # --- UPDATE DB ---
     async with async_session_factory() as db:

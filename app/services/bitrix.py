@@ -220,6 +220,34 @@ class BitrixClient:
         )
         return result.get("result", {})
 
+    def update_task_description(
+        self, task_id: int, description: str
+    ) -> dict[str, Any]:
+        """Update a Bitrix24 task's description.
+
+        Uses ``tasks.task.update.json`` endpoint. This is the reliable way to
+        send messages to tasks without a forum topic (``forumTopicId=None``).
+        ``tasks.task.comment.add`` silently fails for those tasks.
+
+        Args:
+            task_id: Bitrix24 task ID.
+            description: New full description text.
+
+        Returns:
+            The updated task dict from ``result.get("task", {})``.
+
+        Raises:
+            RuntimeError: On HTTP failure.
+        """
+        result = self._call(
+            "tasks.task.update.json",
+            json_body={
+                "id": task_id,
+                "fields": {"DESCRIPTION": description},
+            },
+        )
+        return result.get("result", {}).get("task", {})
+
     def _call(
         self,
         method: str,
