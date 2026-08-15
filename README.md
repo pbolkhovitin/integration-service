@@ -2,7 +2,7 @@
 
 Сервис для синхронизации данных между **Bitrix24**, **GLPI** и **MANGO Office**.
 
-**Текущий статус:** MVP — опрос Bitrix24 REST API → создание тикетов в GLPI + обратная синхронизация статусов и комментариев (GLPI → Bitrix24, test mode). MVP укреплён: Bitrix24-вызовы вынесены из event loop, мутирующие эндпоинты закрыты `X-Admin-Token`, retry зависших/failed-задач, уникальность `(source, source_id)`, lifecycle GLPI-сессий, reverse sync по расписанию с whitelist-защитой.
+**Текущий статус:** MVP — опрос Bitrix24 REST API → создание тикетов в GLPI + обратная синхронизация статусов и комментариев (GLPI → Bitrix24, test mode). MVP укреплён: Bitrix24-вызовы вынесены из event loop, мутирующие эндпоинты закрыты `X-Admin-Token`, retry зависших/failed-задач, уникальность `(source, source_id)`, lifecycle GLPI-сессий, reverse sync по расписанию с whitelist-защитой. В работе (Phase 1.5): расширенный маппинг Bitrix24↔GLPI + L1-шаблон, орг-структура/пользователи по ID, активы NetBox→GLPI, Zabbix, SLA-отчёт в Metabase. Нейминг NetBox — см. `docs/netbox-naming-conventions.md`, план — `docs/superpowers/plans/2026-08-15-phase1-5-mapping-and-sla.md`.
 
 ## Поток данных (MVP — polling mode)
 
