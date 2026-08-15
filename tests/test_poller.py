@@ -159,9 +159,12 @@ class TestSchedulerJobs:
         if sched.running:
             sched.shutdown(wait=False)
 
-    def test_reverse_sync_job_registered_when_test_mode(self, monkeypatch) -> None:
+    def test_reverse_sync_job_registered_when_enabled_and_test_mode(
+        self, monkeypatch
+    ) -> None:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+        monkeypatch.setattr(settings, "BITRIX24_REVERSE_SYNC_ENABLED", True)
         monkeypatch.setattr(settings, "TEST_MODE", True)
         monkeypatch.setattr(settings, "TEST_TASK_IDS", "35591,35633")
 
@@ -174,11 +177,29 @@ class TestSchedulerJobs:
         finally:
             self._shutdown(sched)
 
+    def test_reverse_sync_job_not_registered_by_default(self, monkeypatch) -> None:
+        """No Bitrix24 writes on schedule unless explicitly enabled."""
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+        monkeypatch.setattr(settings, "BITRIX24_REVERSE_SYNC_ENABLED", False)
+        monkeypatch.setattr(settings, "TEST_MODE", True)
+        monkeypatch.setattr(settings, "TEST_TASK_IDS", "35591,35633")
+
+        sched = AsyncIOScheduler()
+        try:
+            poller._register_poller_jobs(sched)
+            ids = [j.id for j in sched.get_jobs()]
+            assert "bitrix24_reverse_sync" not in ids
+            assert "bitrix24_poll" in ids
+        finally:
+            self._shutdown(sched)
+
     def test_reverse_sync_job_not_registered_when_test_mode_off(
         self, monkeypatch
     ) -> None:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+        monkeypatch.setattr(settings, "BITRIX24_REVERSE_SYNC_ENABLED", True)
         monkeypatch.setattr(settings, "TEST_MODE", False)
 
         sched = AsyncIOScheduler()
@@ -193,6 +214,7 @@ class TestSchedulerJobs:
     def test_get_poller_status_includes_reverse_sync(self, monkeypatch) -> None:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+        monkeypatch.setattr(settings, "BITRIX24_REVERSE_SYNC_ENABLED", True)
         monkeypatch.setattr(settings, "TEST_MODE", True)
         monkeypatch.setattr(settings, "TEST_TASK_IDS", "35591,35633")
 
@@ -203,9 +225,30 @@ class TestSchedulerJobs:
             status = poller.get_poller_status()
             assert status["status"] == "running"
             assert status["reverse_sync"]["enabled"] is True
+            assert status["reverse_sync"]["auto_enabled"] is True
             assert (
                 status["reverse_sync"]["interval_seconds"]
                 == settings.BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS
             )
+        finally:
+            self._shutdown(sched)
+
+    def test_get_poller_status_reports_disabled_by_default(
+        self, monkeypatch
+    ) -> None:
+        """Status must show reverse sync is off when the flag is unset."""
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+        monkeypatch.setattr(settings, "BITRIX24_REVERSE_SYNC_ENABLED", False)
+        monkeypatch.setattr(settings, "TEST_MODE", True)
+        monkeypatch.setattr(settings, "TEST_TASK_IDS", "35591,35633")
+
+        sched = AsyncIOScheduler()
+        poller._register_poller_jobs(sched)
+        monkeypatch.setattr(poller, "_scheduler", sched)
+        try:
+            status = poller.get_poller_status()
+            assert status["reverse_sync"]["enabled"] is False
+            assert status["reverse_sync"]["auto_enabled"] is False
         finally:
             self._shutdown(sched)

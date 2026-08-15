@@ -627,7 +627,11 @@ def _register_poller_jobs(scheduler: AsyncIOScheduler) -> None:
         max_instances=1,
         next_run_time=datetime.now(timezone.utc),  # Run immediately on startup
     )
-    if settings.TEST_MODE and settings.test_task_ids:
+    if (
+        settings.BITRIX24_REVERSE_SYNC_ENABLED
+        and settings.TEST_MODE
+        and settings.test_task_ids
+    ):
         scheduler.add_job(
             reverse_sync_test_tasks,
             "interval",
@@ -700,6 +704,7 @@ def get_poller_status() -> dict:
         "next_run": _safe_next_run(poll_job),
         "reverse_sync": {
             "enabled": reverse_job is not None,
+            "auto_enabled": settings.BITRIX24_REVERSE_SYNC_ENABLED,
             "interval_seconds": settings.BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS,
             "next_run": _safe_next_run(reverse_job),
         },

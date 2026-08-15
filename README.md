@@ -201,6 +201,7 @@ uvicorn app.main:app --reload --port 8000
 | `POSTGRES_USER`                  | `integration` | Пользователь БД                  |
 | `BITRIX24_POLL_INTERVAL_SECONDS` | `60`        | Интервал опроса Bitrix24 (секунды)  |
 | `BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS` | `60` | Интервал обратной синхронизации GLPI→Bitrix24 (секунды) |
+| `BITRIX24_REVERSE_SYNC_ENABLED` | `false` | Разрешить **автозапись** в Bitrix24 по расписанию. `false` = Bitrix24 пишется только по явному запросу (`POST /sync/reverse-test`) |
 | `CORS_ORIGINS`                | —           | Разрешённые CORS-origin через запятую (пусто = CORS отключен) |
 | `ADMIN_API_TOKEN`             | —           | Секрет для мутирующих эндпоинтов `/api/bitrix24/sync/*` (заголовок `X-Admin-Token`) |
 | `GLPI_DEFAULT_CATEGORY_ID`       | `1`         | Категория по умолчанию (Инцидент)   |
@@ -474,9 +475,12 @@ APScheduler-based poller, работающий внутри FastAPI процес
 #### Reverse Sync (`app/services/reverse_sync.py`)
 
 Обратная синхронизация — GLPI → Bitrix24. Работает **только** в test mode
-для whitelist-задач (ID из `TEST_TASK_IDS`). Запускается автоматически
-каждые `BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS` (по умолч. 60s) и вручную
-через `POST /api/bitrix24/sync/reverse-test`.
+для whitelist-задач (ID из `TEST_TASK_IDS`). **Запись в Bitrix24 запрещена
+без явного запроса:** по умолчанию (`BITRIX24_REVERSE_SYNC_ENABLED=false`)
+reverse sync выполняется только вручную через
+`POST /api/bitrix24/sync/reverse-test`. Автоматический запуск по расписанию
+каждые `BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS` возможен только при
+`BITRIX24_REVERSE_SYNC_ENABLED=true`.
 
 - **Механизм:**
   1. Читает из БД записи Task с source='bitrix24' и matching source_id

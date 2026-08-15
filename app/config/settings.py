@@ -26,7 +26,12 @@ class Settings(BaseSettings):
     BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS: int = 60
     BITRIX24_RESPONSIBLE_IDS: str = ""  # comma-separated, e.g. "70,71,72"
 
-    # Reverse sync (GLPI → Bitrix24) for test mode
+    # Reverse sync (GLPI → Bitrix24) for test mode.
+    # BITRIX24_REVERSE_SYNC_ENABLED gates ALL writes to Bitrix24. Default
+    # False — Bitrix24 is never written without an explicit request
+    # (the manual POST /sync/reverse-test endpoint). Set True only to allow
+    # the poller to run reverse sync automatically on a schedule.
+    BITRIX24_REVERSE_SYNC_ENABLED: bool = False
     TEST_MODE: bool = True
     TEST_TASK_IDS: str = "35591,35633"  # comma-separated test task IDs
 
