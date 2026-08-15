@@ -262,3 +262,18 @@
 - **Проверка всего с минимальным объёмом:** 7 дней задач из Bitrix24 + whitelist-тестовые задачи (35591/35633 + добавленные через API) — разработать и проверить весь запланированный поток.
 - **Zabbix** — официальный media type (Zabbix→GLPI тикеты) + `netbox-zabbix-sync` (NetBox→Zabbix). Схема зафиксирована в разделе 8.
 - **Сущности GLPI вне NetBox** — варианты получения в разделе 8 (экспорт GLPI→NetBox, docs-signal-infa, Zabbix, нативный инвентарь, вручную).
+
+### Решения grill-me (зафиксированы, 2026-08-16)
+
+1. **L1-поля живут в GLPI** (кастомные поля Fields на тикете: `b24_fio/phone/org/location/problem`), предзаполняются парсингом сырого DESCRIPTION B24; L1 правит в GLPI; шаблон рендерится из полей тикета при writeback.
+2. **Пользователи/орг.** — макс. полно из B24 (ФИО/телефон/должность/отдел), Root entity = «АО АПО Аврора» (25). Маппинг пользователя: `ID→sync_field`, LAST_NAME→realname, NAME→firstname, SECOND_NAME→в realname «ФИО», EMAIL→login+useremails, PERSONAL_PHONE→phone, PERSONAL_MOBILE→mobile, WORK_POSITION→usertitles/comment, UF_DEPARTMENT→entities_id, ACTIVE→is_active.
+3. **Учёт времени**: источник = сумма `glpi_tickets_tasks.actiontime`; запись `elapseditem.add` с `max(sum, MIN=60с)` (`L1_MIN_ELAPSED_SECONDS`); идемпотентность по `last_elapsed_synced`; слои разделены (источник/правило/запись). «Completed без времени» — та же схема (60с fallback). Запрет закрытия без времени — на стороне GLPI (Behaviors/регламент).
+4. **Триггер L1-writeback** — периодический reverse-sync (60с), сравнение `last_glpi_status`/`last_glpi_followup_id`/`last_elapsed_synced`/`last_l1_hash`; пишем изменившееся (описание по шаблону, статус, время, комментарий).
+5. **Идентификация пользователя для новых задач (GLPI→B24)**: двусторонний `org_user_map`; `glpi_user_id→b24_user_id` для CREATED_BY; если не найден — задача НЕ создаётся (лог «нужна идентификация»).
+6. **Обратный маппинг статусов GLPI→B24** (настраиваемый): `{1:1, 2:3, 3:3, 4:2, 5:5, 6:5}`.
+7. **Комментарии**: followup → `tasks.task.comment.add` (чат), dedup по `last_glpi_followup_id`; fallback description-append при `forumTopicId=None`. Возможны правки по итогам тестов.
+8. **Категории**: `classify_category` → name→`itilcategories_id` (резолв по имени, кэш; fallback «Другое»=25). Категория в шаблоне пишется из поля тикета. Проверить в тестах (возможны правки L1-логики).
+9. **Metabase**: контейнер `metabase/metabase` + read-only пользователь БД (`glpi_ro`, SELECT); плагин Metabase 1.4.2; SQL-дашборд.
+10. **GLPI API-пользователь**: выделенный `integration-api`, профиль **Admin**, Entity rights **recursive** (решает «нет прав на глубокие сущности»).
+11. **Создание новых задач в B24 из GLPI** (телефонные): флаг `BITRIX24_CREATE_TASKS_ENABLED=false` (dev); отдельное контролируемое тестирование после основного обмена.
+12. **Орг.структура**: полное зеркало дерева B24 (is_recursive=1); **матчинг по `org_department_map`** (b24_dept_id→glpi_entity_id) — при rename/re-parent обновляем ту же сущность, удалённый отдел — деактивировать (не удалять); компания/подразделение выводится при отчёте (name-hints), без доп. полей.
