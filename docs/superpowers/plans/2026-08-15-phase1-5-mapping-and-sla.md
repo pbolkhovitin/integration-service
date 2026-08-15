@@ -187,9 +187,9 @@
 
 ### Фаза B — Чистый старт и настройка GLPI
 
-- [ ] **B.0 Обновление GLPI** до актуального стабильного релиза (не dev): бэкап → `docker compose pull`/обновление образа glpi-app → миграции (`php bin/console db:update`) → проверка. Плагины — после обновления.
-- [ ] **B.1 Установка плагинов** (Fields, Tag, Datainjection, Mreporting/Metabase) + проверка совместимости с GLPI 10.x (ветки `10.0/bugfixes`).
-- [ ] **B.2 Категории**: создать 12 ITIL-категорий в GLPI (по XLSX).
+- [x] **B.0 Обновление GLPI** (реинсталл 11.0.8, Вариант A) — выполнено 2026-08-16 до актуального стабильного релиза (не dev): бэкап → `docker compose pull`/обновление образа glpi-app → миграции (`php bin/console db:update`) → проверка. Плагины — после обновления.
+- [x] **B.1 Установка плагинов** (Fields, Tag, Datainjection, Mreporting, Metabase) — выполнено (Fields, Tag, Datainjection, Mreporting/Metabase) + проверка совместимости с GLPI 10.x (ветки `10.0/bugfixes`).
+- [x] **B.2 Категории** (12 услуг) — выполнено: создать 12 ITIL-категорий в GLPI (по XLSX).
 - [ ] **B.3 SLA**: настроить SLAs по приоритетам (first response/resolution).
 - [ ] **B.4 Очистка тикетов**: purge всех тикетов + связей (пользователей/entity/категории/SLA не трогаем).
 - [ ] **B.5 Org sync прогон** → соответствия + пользователи/сущности.
