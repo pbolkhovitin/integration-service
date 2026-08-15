@@ -3,7 +3,17 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String, Text, Enum as SAEnum, func
+from sqlalchemy import (
+    DateTime,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy import (
+    Enum as SAEnum,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -40,6 +50,10 @@ class Task(Base, TimestampMixin):
     """
 
     __tablename__ = "tasks"
+
+    __table_args__ = (
+        UniqueConstraint("source", "source_id", name="ix_tasks_source_source_id"),
+    )
 
     source: Mapped[str] = mapped_column(String(50), nullable=False)
     source_id: Mapped[str] = mapped_column(String(255), nullable=False)

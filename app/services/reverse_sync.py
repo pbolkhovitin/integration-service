@@ -164,119 +164,129 @@ async def _sync_one_task(
 
     # e. Init GLPI session (sync call in thread)
     glpi_session = await asyncio.to_thread(glpi_client.init_session)
-
-    # f. Get followups (sync call in thread)
-    followups = await asyncio.to_thread(
-        glpi_client.get_ticket_followups,
-        glpi_ticket_id,
-        glpi_session,
-    )
-
-    # g. Get current ticket info (sync call in thread)
-    ticket_info = await asyncio.to_thread(
-        glpi_client.show_ticket,
-        glpi_ticket_id,
-        glpi_session,
-    )
-
-    # h. Extract current GLPI status
-    current_glpi_status = _extract_glpi_status(ticket_info)
-    if current_glpi_status is None:
-        logger.warning(
-            "Reverse sync: no status found in GLPI ticket %s",
+    try:
+        # f. Get followups (sync call in thread)
+        followups = await asyncio.to_thread(
+            glpi_client.get_ticket_followups,
             glpi_ticket_id,
+            glpi_session,
         )
-        return
 
-    summary["checked"] += 1
-    summary["glpi_followups_read"] += len(followups)
+        # g. Get current ticket info (sync call in thread)
+        ticket_info = await asyncio.to_thread(
+            glpi_client.show_ticket,
+            glpi_ticket_id,
+            glpi_session,
+        )
+
+        # h. Extract current GLPI status
+        current_glpi_status = _extract_glpi_status(ticket_info)
+        if current_glpi_status is None:
+            logger.warning(
+                "Reverse sync: no status found in GLPI ticket %s",
+                glpi_ticket_id,
+            )
+            return
+
+        summary["checked"] += 1
+        summary["glpi_followups_read"] += len(followups)
 
     # --- STATUS SYNC ---
-    last_glpi_status: int | None = None
-    if task.last_glpi_status is not None:
-        try:
-            last_glpi_status = int(task.last_glpi_status)
-        except (ValueError, TypeError):
-            last_glpi_status = None
+        last_glpi_status: int | None = None
+        if task.last_glpi_status is not None:
+            try:
+                last_glpi_status = int(task.last_glpi_status)
+            except (ValueError, TypeError):
+                last_glpi_status = None
 
-    if last_glpi_status is None or current_glpi_status != last_glpi_status:
-        mapped_status = _GLPI_TO_BITRIX_STATUS.get(current_glpi_status, 1)
-        await asyncio.to_thread(
-            bitrix_client.update_task_status,
-            task_id,
-            mapped_status,
-        )
-        summary["status_updated"] += 1
-        logger.info(
-            "Reverse sync: updated Bitrix24 task %s status to %d "
-            "(GLPI: %d → Bitrix: %d)",
-            task_id,
-            mapped_status,
-            current_glpi_status,
-            mapped_status,
-        )
-
-    # --- FOLLOWUP SYNC (description append for forumTopicId=None tasks) ---
-    last_followup_id: int = task.last_glpi_followup_id or 0
-    max_followup_id: int = last_followup_id
-    new_followups = [
-        f for f in followups if f.get("id", 0) > last_followup_id
-    ]
-
-    if new_followups:
-        # Get current Bitrix24 task description
-        b24_task = await asyncio.to_thread(
-            bitrix_client.get_task, task_id,
-        )
-        current_desc = b24_task.get("DESCRIPTION") or ""
-
-        # Append all new followups to description
-        updated_desc = current_desc
-        for fu in new_followups:
-            fu_id = fu.get("id", 0)
-            fu_date = fu.get("date", "unknown date")
-            fu_content = fu.get("content", "")
-            # Truncate very long content (Bitrix24 description has limits)
-            if len(fu_content) > 2000:
-                fu_content = fu_content[:2000] + "..."
-            separator = "\n\n" if updated_desc else ""
-            updated_desc += f"{separator}[GLPI {fu_date}] {fu_content}"
-            if fu_id > max_followup_id:
-                max_followup_id = fu_id
-
-        # Cap total description length to stay within Bitrix24 TEXT limit (~65KB)
-        MAX_DESC_LENGTH = 60000
-        if len(updated_desc) > MAX_DESC_LENGTH:
-            updated_desc = updated_desc[:MAX_DESC_LENGTH] + "\n\n... [truncated]"
-
-        # Write back once (single API call for all followups)
-        await asyncio.to_thread(
-            bitrix_client.update_task_description,
-            task_id,
-            updated_desc,
-        )
-        summary["comments_sent"] += len(new_followups)
-        logger.info(
-            "Reverse sync: appended %d followups to Bitrix24 task %s description",
-            len(new_followups),
-            task_id,
-        )
-
-    # --- UPDATE DB ---
-    async with async_session_factory() as db:
-        result = await db.execute(
-            select(Task).where(
-                Task.source == "bitrix24",
-                Task.source_id == str(task_id),
-            ),
-        )
-        db_task = result.scalar_one_or_none()
-        if db_task is not None:
-            db_task.last_glpi_status = str(current_glpi_status)
-            db_task.last_glpi_followup_id = (
-                max_followup_id if max_followup_id > 0 else None
+        if last_glpi_status is None or current_glpi_status != last_glpi_status:
+            mapped_status = _GLPI_TO_BITRIX_STATUS.get(current_glpi_status, 1)
+            await asyncio.to_thread(
+                bitrix_client.update_task_status,
+                task_id,
+                mapped_status,
             )
-            await db.commit()
+            summary["status_updated"] += 1
+            logger.info(
+                "Reverse sync: updated Bitrix24 task %s status to %d "
+                "(GLPI: %d → Bitrix: %d)",
+                task_id,
+                mapped_status,
+                current_glpi_status,
+                mapped_status,
+            )
+
+        # --- FOLLOWUP SYNC (description append for forumTopicId=None tasks) ---
+        last_followup_id: int = task.last_glpi_followup_id or 0
+        max_followup_id: int = last_followup_id
+        new_followups = [
+            f for f in followups if f.get("id", 0) > last_followup_id
+        ]
+
+        if new_followups:
+            # Get current Bitrix24 task description
+            b24_task = await asyncio.to_thread(
+                bitrix_client.get_task, task_id,
+            )
+            current_desc = b24_task.get("DESCRIPTION") or ""
+
+            # Append all new followups to description
+            updated_desc = current_desc
+            for fu in new_followups:
+                fu_id = fu.get("id", 0)
+                fu_date = fu.get("date", "unknown date")
+                fu_content = fu.get("content", "")
+                # Truncate very long content (Bitrix24 description has limits)
+                if len(fu_content) > 2000:
+                    fu_content = fu_content[:2000] + "..."
+                separator = "\n\n" if updated_desc else ""
+                updated_desc += f"{separator}[GLPI {fu_date}] {fu_content}"
+                if fu_id > max_followup_id:
+                    max_followup_id = fu_id
+
+            # Cap total description length to stay within Bitrix24 TEXT limit (~65KB)
+            MAX_DESC_LENGTH = 60000
+            if len(updated_desc) > MAX_DESC_LENGTH:
+                updated_desc = updated_desc[:MAX_DESC_LENGTH] + "\n\n... [truncated]"
+
+            # Write back once (single API call for all followups)
+            await asyncio.to_thread(
+                bitrix_client.update_task_description,
+                task_id,
+                updated_desc,
+            )
+            summary["comments_sent"] += len(new_followups)
+            logger.info(
+                "Reverse sync: appended %d followups to Bitrix24 task %s description",
+                len(new_followups),
+                task_id,
+            )
+
+        # --- UPDATE DB ---
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(Task).where(
+                    Task.source == "bitrix24",
+                    Task.source_id == str(task_id),
+                ),
+            )
+            db_task = result.scalar_one_or_none()
+            if db_task is not None:
+                db_task.last_glpi_status = str(current_glpi_status)
+                db_task.last_glpi_followup_id = (
+                    max_followup_id if max_followup_id > 0 else None
+                )
+                await db.commit()
+    finally:
+        # Always release the GLPI session, even on early return/error.
+        try:
+            await asyncio.to_thread(glpi_client.kill_session, glpi_session)
+        except Exception:
+            logger.warning(
+                "Reverse sync: failed to kill GLPI session for task %s",
+                task_id,
+                exc_info=True,
+            )
 
 
 def get_reverse_sync_status() -> dict:

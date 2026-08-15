@@ -394,6 +394,106 @@ class TestCreateTicket:
         assert "non-JSON" in msg
 
 
+class TestCreateTicketDefaults:
+    """create_ticket passes category/group/entity ids through to GLPI."""
+
+    def test_category_group_entity_included_when_provided(self) -> None:
+        def handler(request: Request) -> Response:
+            body = json.loads(request.read())
+            assert body["input"][0]["categories_id"] == 7
+            assert body["input"][0]["groups_id"] == 3
+            assert body["input"][0]["entities_id"] == 5
+            return Response(201, json={"id": 101})
+
+        client = _build_client(handler)
+        result = client.create_ticket(
+            "Name",
+            "Content",
+            "sess",
+            category_id=7,
+            group_id=3,
+            entity_id=5,
+        )
+        assert result == {"id": 101}
+
+    def test_defaults_omitted_when_none(self) -> None:
+        def handler(request: Request) -> Response:
+            body = json.loads(request.read())
+            payload = body["input"][0]
+            assert "categories_id" not in payload
+            assert "groups_id" not in payload
+            assert "entities_id" not in payload
+            assert payload["name"] == "Name"
+            assert payload["type"] == 1
+            return Response(201, json={"id": 101})
+
+        client = _build_client(handler)
+        client.create_ticket("Name", "Content", "sess")
+
+    def test_some_ids_omitted_when_none(self) -> None:
+        def handler(request: Request) -> Response:
+            body = json.loads(request.read())
+            payload = body["input"][0]
+            assert payload["categories_id"] == 7
+            assert "groups_id" not in payload
+            assert "entities_id" not in payload
+            return Response(201, json={"id": 101})
+
+        client = _build_client(handler)
+        client.create_ticket("Name", "Content", "sess", category_id=7)
+
+
+# ===================================================================
+# kill_session
+# ===================================================================
+
+
+class TestKillSession:
+    """DELETE /apirest.php/killSession."""
+
+    def test_success_sends_delete_and_returns_json(self) -> None:
+        def handler(request: Request) -> Response:
+            assert request.method == "DELETE"
+            assert (
+                str(request.url)
+                == "http://glpi.test/apirest.php/killSession"
+            )
+            return Response(200, json={"success": True})
+
+        client = _build_client(handler)
+        result = client.kill_session("session-abc")
+        assert result == {"success": True}
+
+    def test_sends_session_token_header(self) -> None:
+        def handler(request: Request) -> Response:
+            assert request.headers.get("Session-Token") == "sess-xyz"
+            return Response(200, json={"success": True})
+
+        client = _build_client(handler)
+        client.kill_session("sess-xyz")
+
+    def test_http_error_raises_runtime_error(self) -> None:
+        def handler(request: Request) -> Response:
+            return Response(500, text="Server Error")
+
+        client = _build_client(handler)
+        with pytest.raises(RuntimeError) as exc_info:
+            client.kill_session("sess")
+        msg = str(exc_info.value)
+        assert "500" in msg
+        assert "killSession" in msg
+
+    def test_network_error_raises_runtime_error(self) -> None:
+        def handler(request: Request) -> Response:
+            raise httpx.RequestError("Connection lost")
+
+        client = _build_client(handler)
+        with pytest.raises(RuntimeError) as exc_info:
+            client.kill_session("sess")
+        msg = str(exc_info.value)
+        assert "Connection lost" in msg
+
+
 # ===================================================================
 # Context manager
 # ===================================================================

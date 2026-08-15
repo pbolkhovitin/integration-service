@@ -128,6 +128,9 @@ class GLPIClient:
         name: str,
         content: str,
         session_token: str,
+        category_id: int | None = None,
+        group_id: int | None = None,
+        entity_id: int | None = None,
     ) -> dict[str, Any]:
         """Create a new GLPI incident ticket.
 
@@ -140,6 +143,9 @@ class GLPIClient:
             content: Body / description of the ticket.
             session_token: A valid session token obtained from
                 :meth:`init_session`.
+            category_id: Optional GLPI category ID (``categories_id``).
+            group_id: Optional GLPI group ID (``groups_id``).
+            entity_id: Optional GLPI entity ID (``entities_id``).
 
         Returns:
             Parsed JSON response as a dictionary.
@@ -148,15 +154,18 @@ class GLPIClient:
             RuntimeError: On HTTP failure.
         """
         url = f"{self._base_url}/apirest.php/Ticket"
-        payload: dict[str, list[dict[str, Any]]] = {
-            "input": [
-                {
-                    "name": name,
-                    "content": content,
-                    "type": 1,
-                }
-            ]
+        ticket: dict[str, Any] = {
+            "name": name,
+            "content": content,
+            "type": 1,
         }
+        if category_id is not None:
+            ticket["categories_id"] = category_id
+        if group_id is not None:
+            ticket["groups_id"] = group_id
+        if entity_id is not None:
+            ticket["entities_id"] = entity_id
+        payload: dict[str, list[dict[str, Any]]] = {"input": [ticket]}
         logger.debug("POST %s — creating ticket %r", url, name)
 
         return self._call(
@@ -201,6 +210,28 @@ class GLPIClient:
             json_body=payload,
             session_token=session_token,
         )
+
+    def kill_session(self, session_token: str) -> Any:
+        """Terminate a GLPI API session.
+
+        Sends a ``DELETE {base_url}/apirest.php/killSession`` request with
+        the ``Session-Token`` header. Call this when finished with a
+        session to avoid accumulating stale sessions on the GLPI side.
+
+        Args:
+            session_token: A valid session token obtained from
+                :meth:`init_session`.
+
+        Returns:
+            Parsed JSON response (typically ``{"success": True}``).
+
+        Raises:
+            RuntimeError: On HTTP failure.
+        """
+        url = f"{self._base_url}/apirest.php/killSession"
+        logger.debug("DELETE %s — killing GLPI session", url)
+
+        return self._call(method="DELETE", url=url, session_token=session_token)
 
     # ------------------------------------------------------------------
     # Ticket followups

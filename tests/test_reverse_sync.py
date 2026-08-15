@@ -1298,11 +1298,23 @@ class TestReverseSyncAPIEndpoints:
         assert "test_task_ids" in data
         assert "active" in data
 
-    async def test_post_reverse_test_disabled(self, async_client) -> None:
+    async def test_post_reverse_test_disabled(self, async_client, monkeypatch) -> None:
         """POST /sync/reverse-test returns early error when TEST_MODE=False."""
+        from pydantic import SecretStr
+
+        from app.config.settings import settings as app_settings
+
+        # Mutating endpoint requires the admin token.
+        monkeypatch.setattr(
+            app_settings, "ADMIN_API_TOKEN", SecretStr("test-token")
+        )
+        headers = {"X-Admin-Token": "test-token"}
+
         # The handler imports from app.services.reverse_sync which uses its own
         # module-level `settings` reference — patch that directly.
         with patch("app.services.reverse_sync.settings.TEST_MODE", False):
-            resp = await async_client.post("/api/bitrix24/sync/reverse-test")
+            resp = await async_client.post(
+                "/api/bitrix24/sync/reverse-test", headers=headers
+            )
             assert resp.status_code == 200
             assert resp.json() == {"error": "TEST_MODE is disabled"}

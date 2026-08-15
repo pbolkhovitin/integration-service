@@ -468,3 +468,35 @@ class TestMappedTypeAnnotations:
         args = typing.get_args(inner)
         assert int in args, f"Expected int in {args}"
         assert type(None) in args, f"Expected NoneType in {args}"
+
+
+# ===================================================================
+# Unique constraint on (source, source_id)
+# ===================================================================
+
+
+class TestSourceSourceIdUniqueConstraint:
+    """Task declares an explicit unique constraint on (source, source_id)."""
+
+    def test_table_args_contains_unique_constraint(self) -> None:
+        from sqlalchemy import UniqueConstraint
+
+        constraints = Task.__table__.constraints
+        unique = [
+            c
+            for c in constraints
+            if isinstance(c, UniqueConstraint)
+            and {col.name for col in c.columns} == {"source", "source_id"}
+        ]
+        assert unique, "Expected a UniqueConstraint on (source, source_id)"
+
+    def test_constraint_name_is_ix_tasks_source_source_id(self) -> None:
+        from sqlalchemy import UniqueConstraint
+
+        unique = [
+            c
+            for c in Task.__table__.constraints
+            if isinstance(c, UniqueConstraint)
+            and c.name == "ix_tasks_source_source_id"
+        ]
+        assert unique, "Expected named constraint ix_tasks_source_source_id"

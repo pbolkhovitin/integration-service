@@ -19,21 +19,15 @@ class TestAppMetadata:
 
         assert Settings().APP_NAME == "Integration Service"
 
-    def test_cors_middleware_configured_with_wildcard_origins(self):
-        """CORS middleware allows all origins, methods, headers, and credentials."""
+    def test_cors_middleware_not_registered_when_no_origins(self):
+        """CORS middleware is not added when CORS_ORIGINS is empty (default)."""
         from fastapi.middleware.cors import CORSMiddleware
         from app.main import app
 
         cors_middlewares = [
             m for m in app.user_middleware if m.cls is CORSMiddleware
         ]
-        assert len(cors_middlewares) == 1, "Expected exactly one CORS middleware"
-
-        kwargs = cors_middlewares[0].kwargs
-        assert kwargs.get("allow_origins") == ["*"]
-        assert kwargs.get("allow_credentials") is None
-        assert kwargs.get("allow_methods") == ["*"]
-        assert kwargs.get("allow_headers") == ["*"]
+        assert cors_middlewares == []
 
 
 class TestHealthEndpoint:

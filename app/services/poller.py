@@ -12,13 +12,15 @@ import logging
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select, func as sa_func
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.config.settings import settings
 from app.core.database import async_session_factory
 from app.models.task import Task
 from app.services.bitrix import BitrixClient
 from app.services.glpi import GLPIClient
+from app.services.reverse_sync import reverse_sync_test_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,46 @@ _scheduler: AsyncIOScheduler | None = None
 # Safety: skip orphan detection if fewer than this many tasks were fetched
 # (could indicate API error or network issue)
 _MIN_TASKS_FOR_RECONCILIATION = 10
+
+# Closed/inactive Bitrix24 statuses that are not processed:
+# 4 — awaiting control (supposedly completed), 5 — completed, 6/7 — deferred.
+# 1 (new), 2 (pending), 3 (in progress) are still active and processed.
+_SKIPPED_BITRIX_STATUSES = {4, 5, 6, 7}
+
+
+def _is_skipped_bitrix_status(status) -> bool:
+    """Return True if a Bitrix24 task status means the task is closed/inactive."""
+    return status in _SKIPPED_BITRIX_STATUSES
+
+
+def _stale_processing_seconds() -> int:
+    """Threshold after which a ``processing`` task is considered stuck.
+
+    Must exceed the time needed to process one page (GLPI timeout is 30s),
+    but not be smaller than two poll intervals.
+    """
+    return max(2 * settings.BITRIX24_POLL_INTERVAL_SECONDS, 60)
+
+
+def _should_retry_task(task: Task, now: datetime | None = None) -> bool:
+    """Decide whether an existing Task should be processed again.
+
+    ``completed``/``cancelled`` are never retried. ``failed`` tasks are
+    retried while attempts remain. ``processing`` tasks are retried only
+    when stale (stuck after a crash) — otherwise another worker may still
+    be handling them.
+    """
+    if task.status in ("completed", "cancelled"):
+        return False
+    if task.status == "failed":
+        return task.attempts < task.max_attempts
+    if task.status == "processing":
+        now = now or datetime.now(timezone.utc)
+        updated = task.updated_at
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        return (now - updated).total_seconds() > _stale_processing_seconds()
+    return True  # pending and any other statuses
 
 
 async def _poll_bitrix24() -> None:
@@ -65,6 +107,8 @@ async def _poll_bitrix24() -> None:
     # Collect all Bitrix24 task IDs fetched this cycle
     all_fetched_ids: set[str] = set()
 
+    glpi_session: str | None = None
+
     try:
         # Init GLPI session
         glpi_session = glpi_client.init_session()
@@ -89,6 +133,11 @@ async def _poll_bitrix24() -> None:
     except Exception:
         logger.exception("Poll cycle failed")
     finally:
+        if glpi_session is not None:
+            try:
+                glpi_client.kill_session(glpi_session)
+            except Exception:
+                logger.warning("Failed to kill GLPI session", exc_info=True)
         bitrix_client.close()
         glpi_client.close()
 
@@ -111,9 +160,10 @@ async def _poll_for_user(
     fetched_ids: set[str] = set()
 
     while True:
-        # Fetch page of tasks from Bitrix24
+        # Fetch page of tasks from Bitrix24 (blocking sync call in thread)
         try:
-            page = bitrix_client.get_tasks(
+            page = await asyncio.to_thread(
+                bitrix_client.get_tasks,
                 responsible_id=responsible_id,
                 start=start,
             )
@@ -185,9 +235,9 @@ async def _process_task(
         logger.warning("Skipping task without ID: %s", task_data)
         return "skipped"
 
-    # Skip closed/completed tasks (status 3=closed, 5=closed+completed)
-    if status in (3, 5):
-        logger.debug("Skipping completed task %s", task_id)
+    # Skip closed/inactive tasks (4=awaiting control, 5=completed, 6/7=deferred)
+    if _is_skipped_bitrix_status(status):
+        logger.debug("Skipping inactive task %s (status=%s)", task_id, status)
         return "skipped"
 
     # Idempotency check: have we already processed this task?
@@ -200,15 +250,20 @@ async def _process_task(
         )
         existing = result.scalar_one_or_none()
         if existing is not None:
-            if existing.status == "completed":
+            if not _should_retry_task(existing):
                 return "skipped"
-            # If failed, we could retry, but for MVP skip
-            return "skipped"
+            # Retry failed/stale task: bump attempts and reset state.
+            existing.attempts += 1
+            existing.status = "processing"
+            existing.last_error = None
+            await db.commit()
 
     # Build GLPI ticket content
     # Fetch tags only for new tasks (not in DB yet) to avoid excess API calls
     try:
-        tags = bitrix_client.get_task_tags(int(task_id))
+        tags = await asyncio.to_thread(
+            bitrix_client.get_task_tags, int(task_id)
+        )
         task_data["TAGS"] = tags
     except Exception as exc:
         logger.warning("Failed to fetch tags for task %s: %s", task_id, exc)
@@ -217,17 +272,22 @@ async def _process_task(
     content = _build_ticket_content(task_data)
 
     # Create Task record first (for idempotency)
-    async with async_session_factory() as db:
-        task = Task(
-            source="bitrix24",
-            source_id=task_id,
-            type="create_ticket",
-            payload=task_data,
-            status="processing",
-            idempotency_key=f"b24:{task_id}",
-        )
-        db.add(task)
-        await db.commit()
+    try:
+        async with async_session_factory() as db:
+            task = Task(
+                source="bitrix24",
+                source_id=task_id,
+                type="create_ticket",
+                payload=task_data,
+                status="processing",
+                idempotency_key=f"b24:{task_id}",
+            )
+            db.add(task)
+            await db.commit()
+    except IntegrityError:
+        # A concurrent poll cycle created the same task first — skip it.
+        logger.info("Task %s already exists (concurrent poll) — skipping", task_id)
+        return "skipped"
 
     # Create GLPI ticket via sync call in thread
     try:
@@ -236,6 +296,9 @@ async def _process_task(
             name=f"[Bitrix24 #{task_id}] {title}",
             content=content,
             session_token=glpi_session,
+            category_id=settings.GLPI_DEFAULT_CATEGORY_ID,
+            group_id=settings.GLPI_DEFAULT_GROUP_ID,
+            entity_id=settings.GLPI_DEFAULT_ENTITY_ID,
         )
     except Exception as exc:
         logger.error("Failed to create GLPI ticket for task %s: %s", task_id, exc)
@@ -247,6 +310,7 @@ async def _process_task(
                 )
             )
             task = result.scalar_one_or_none()
+            task.attempts += 1
             task.status = "failed"
             task.last_error = str(exc)
             await db.commit()
@@ -361,10 +425,7 @@ async def _reconcile_deletions(
         return
 
     # Find orphaned tasks: in DB but not in Bitrix24 response
-    orphans = []
-    for task in db_tasks:
-        if task.source_id not in all_fetched_ids:
-            orphans.append(task)
+    orphans = [t for t in db_tasks if t.source_id not in all_fetched_ids]
 
     if not orphans:
         logger.debug(
@@ -378,6 +439,28 @@ async def _reconcile_deletions(
         len(orphans),
     )
 
+    closed_count = await _close_orphan_tickets(
+        glpi_client=glpi_client,
+        glpi_session=glpi_session,
+        orphans=orphans,
+    )
+
+    logger.info(
+        "Reconciliation complete: %d/%d orphaned tasks closed in GLPI",
+        closed_count,
+        len(orphans),
+    )
+
+
+async def _close_orphan_tickets(
+    glpi_client: GLPIClient,
+    glpi_session: str,
+    orphans: list[Task],
+) -> int:
+    """Close GLPI tickets (status=5 solved) for orphaned tasks.
+
+    Returns the number of tickets successfully closed.
+    """
     closed_count = 0
     for task in orphans:
         # Extract GLPI ticket ID from task.result
@@ -413,11 +496,37 @@ async def _reconcile_deletions(
                 exc,
             )
 
-    logger.info(
-        "Reconciliation complete: %d/%d orphaned tasks closed in GLPI",
-        closed_count,
-        len(orphans),
-    )
+    return closed_count
+
+
+async def _fetch_all_bitrix_task_ids(bitrix_client: BitrixClient) -> set[str]:
+    """Fetch all Bitrix24 task IDs for all responsible users.
+
+    Returns the full set of task IDs currently present in Bitrix24.
+    """
+    all_fetched_ids: set[str] = set()
+
+    for responsible_id in settings.responsible_ids:
+        start = 0
+        while True:
+            page = await asyncio.to_thread(
+                bitrix_client.get_tasks,
+                responsible_id=responsible_id,
+                start=start,
+            )
+            tasks = page.get("tasks", [])
+            next_offset = page.get("next", 0)
+
+            for t in tasks:
+                tid = str(t.get("ID", ""))
+                if tid:
+                    all_fetched_ids.add(tid)
+
+            if next_offset == 0 or next_offset <= start:
+                break
+            start = next_offset
+
+    return all_fetched_ids
 
 
 # ------------------------------------------------------------------
@@ -440,30 +549,13 @@ async def cleanup_orphaned_tasks() -> dict:
         user_token=settings.GLPI_USER_TOKEN.get_secret_value(),
     )
 
-    all_fetched_ids: set[str] = set()
+    glpi_session: str | None = None
 
     try:
         glpi_session = glpi_client.init_session()
 
         # Fetch all tasks from Bitrix24
-        for responsible_id in settings.responsible_ids:
-            start = 0
-            while True:
-                page = bitrix_client.get_tasks(
-                    responsible_id=responsible_id,
-                    start=start,
-                )
-                tasks = page.get("tasks", [])
-                next_offset = page.get("next", 0)
-
-                for t in tasks:
-                    tid = str(t.get("ID", ""))
-                    if tid:
-                        all_fetched_ids.add(tid)
-
-                if next_offset == 0 or next_offset <= start:
-                    break
-                start = next_offset
+        all_fetched_ids = await _fetch_all_bitrix_task_ids(bitrix_client)
 
         # Get DB tasks
         async with async_session_factory() as db:
@@ -477,21 +569,11 @@ async def cleanup_orphaned_tasks() -> dict:
 
         orphans = [t for t in db_tasks if t.source_id not in all_fetched_ids]
 
-        closed = 0
-        for task in orphans:
-            glpi_id = _extract_glpi_ticket_id(task)
-
-            if glpi_id:
-                try:
-                    await asyncio.to_thread(
-                        glpi_client.update_ticket,
-                        ticket_id=int(glpi_id),
-                        session_token=glpi_session,
-                        status=5,
-                    )
-                    closed += 1
-                except Exception as exc:
-                    logger.error("Failed to close ticket %s: %s", glpi_id, exc)
+        closed = await _close_orphan_tickets(
+            glpi_client=glpi_client,
+            glpi_session=glpi_session,
+            orphans=orphans,
+        )
 
         return {
             "bitrix24_tasks_fetched": len(all_fetched_ids),
@@ -502,8 +584,58 @@ async def cleanup_orphaned_tasks() -> dict:
         }
 
     finally:
+        if glpi_session is not None:
+            try:
+                glpi_client.kill_session(glpi_session)
+            except Exception:
+                logger.warning("Failed to kill GLPI session", exc_info=True)
         bitrix_client.close()
         glpi_client.close()
+
+
+async def retry_failed_tasks() -> dict:
+    """Requeue failed bitrix24 tasks (attempts < max_attempts) to pending.
+
+    Returns a summary of what was requeued.
+    """
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(Task).where(
+                Task.source == "bitrix24",
+                Task.status == "failed",
+            )
+        )
+        tasks = result.scalars().all()
+        requeued = 0
+        for t in tasks:
+            if t.attempts < t.max_attempts:
+                t.status = "pending"
+                t.last_error = None
+                requeued += 1
+        await db.commit()
+        return {"requeued": requeued, "failed_total": len(tasks)}
+
+
+def _register_poller_jobs(scheduler: AsyncIOScheduler) -> None:
+    """Register the polling and (optionally) reverse-sync jobs."""
+    scheduler.add_job(
+        _poll_bitrix24,
+        "interval",
+        seconds=settings.BITRIX24_POLL_INTERVAL_SECONDS,
+        id="bitrix24_poll",
+        name="Bitrix24 Task Poller",
+        max_instances=1,
+        next_run_time=datetime.now(timezone.utc),  # Run immediately on startup
+    )
+    if settings.TEST_MODE and settings.test_task_ids:
+        scheduler.add_job(
+            reverse_sync_test_tasks,
+            "interval",
+            seconds=settings.BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS,
+            id="bitrix24_reverse_sync",
+            name="Bitrix24 Reverse Sync (GLPI -> Bitrix24)",
+            max_instances=1,
+        )
 
 
 def start_poller() -> None:
@@ -519,15 +651,7 @@ def start_poller() -> None:
         return
 
     _scheduler = AsyncIOScheduler()
-    _scheduler.add_job(
-        _poll_bitrix24,
-        "interval",
-        seconds=settings.BITRIX24_POLL_INTERVAL_SECONDS,
-        id="bitrix24_poll",
-        name="Bitrix24 Task Poller",
-        max_instances=1,
-        next_run_time=datetime.now(timezone.utc),  # Run immediately on startup
-    )
+    _register_poller_jobs(_scheduler)
     _scheduler.start()
     logger.info(
         "Poller started: interval=%ds, responsible_ids=%s",
@@ -545,6 +669,18 @@ def stop_poller() -> None:
         logger.info("Poller stopped")
 
 
+def _safe_next_run(job) -> str | None:
+    """Return the job's next run time as ISO string, or None.
+
+    APScheduler exposes ``next_run_time`` only while the scheduler is
+    running — guard against a not-yet-started scheduler.
+    """
+    try:
+        return job.next_run_time.isoformat()
+    except (AttributeError, TypeError):
+        return None
+
+
 def get_poller_status() -> dict:
     """Get current poller status."""
     global _scheduler
@@ -552,11 +688,19 @@ def get_poller_status() -> dict:
         return {"status": "not_started"}
 
     jobs = _scheduler.get_jobs()
-    job = jobs[0] if jobs else None
+    poll_job = next((j for j in jobs if j.id == "bitrix24_poll"), None)
+    reverse_job = next(
+        (j for j in jobs if j.id == "bitrix24_reverse_sync"), None
+    )
 
     return {
         "status": "running",
         "interval_seconds": settings.BITRIX24_POLL_INTERVAL_SECONDS,
         "responsible_ids": settings.responsible_ids,
-        "next_run": job.next_run_time.isoformat() if job else None,
+        "next_run": _safe_next_run(poll_job),
+        "reverse_sync": {
+            "enabled": reverse_job is not None,
+            "interval_seconds": settings.BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS,
+            "next_run": _safe_next_run(reverse_job),
+        },
     }
