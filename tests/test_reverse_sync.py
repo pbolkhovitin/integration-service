@@ -607,12 +607,17 @@ class TestGetReverseSyncStatus:
         with (
             patch("app.services.reverse_sync.settings.TEST_MODE", True),
             patch("app.services.reverse_sync.settings.TEST_TASK_IDS", "35591,35633"),
+            patch(
+                "app.services.reverse_sync.settings.BITRIX24_REVERSE_SYNC_ENABLED",
+                True,
+            ),
         ):
             result = get_reverse_sync_status()
             assert result == {
                 "test_mode": True,
                 "test_task_ids": [35591, 35633],
                 "active": True,
+                "auto_write_enabled": True,
             }
 
     def test_inactive_when_test_mode_false(self) -> None:
@@ -622,12 +627,17 @@ class TestGetReverseSyncStatus:
         with (
             patch("app.services.reverse_sync.settings.TEST_MODE", False),
             patch("app.services.reverse_sync.settings.TEST_TASK_IDS", "35591"),
+            patch(
+                "app.services.reverse_sync.settings.BITRIX24_REVERSE_SYNC_ENABLED",
+                True,
+            ),
         ):
             result = get_reverse_sync_status()
             assert result == {
                 "test_mode": False,
                 "test_task_ids": [35591],
                 "active": False,
+                "auto_write_enabled": True,
             }
 
     def test_inactive_when_empty_ids(self) -> None:
@@ -637,12 +647,17 @@ class TestGetReverseSyncStatus:
         with (
             patch("app.services.reverse_sync.settings.TEST_MODE", True),
             patch("app.services.reverse_sync.settings.TEST_TASK_IDS", ""),
+            patch(
+                "app.services.reverse_sync.settings.BITRIX24_REVERSE_SYNC_ENABLED",
+                True,
+            ),
         ):
             result = get_reverse_sync_status()
             assert result == {
                 "test_mode": True,
                 "test_task_ids": [],
                 "active": False,
+                "auto_write_enabled": True,
             }
 
     def test_inactive_both_false(self) -> None:
@@ -652,12 +667,17 @@ class TestGetReverseSyncStatus:
         with (
             patch("app.services.reverse_sync.settings.TEST_MODE", False),
             patch("app.services.reverse_sync.settings.TEST_TASK_IDS", ""),
+            patch(
+                "app.services.reverse_sync.settings.BITRIX24_REVERSE_SYNC_ENABLED",
+                False,
+            ),
         ):
             result = get_reverse_sync_status()
             assert result == {
                 "test_mode": False,
                 "test_task_ids": [],
                 "active": False,
+                "auto_write_enabled": False,
             }
 
 
@@ -1236,6 +1256,82 @@ class TestSyncOneTaskFollowupAppend:
         bitrix.get_task.assert_not_called()
         bitrix.update_task_description.assert_not_called()
         glpi.init_session.assert_not_called()
+
+
+# ===================================================================
+# Whitelist guard — no Bitrix24 writes outside TEST_TASK_IDS
+# ===================================================================
+
+
+class TestWhitelistGuard:
+    """``_is_whitelisted_task`` and the guard in ``_sync_one_task``."""
+
+    def test_is_whitelisted_for_test_task(self) -> None:
+        from app.services.reverse_sync import _is_whitelisted_task
+
+        with (
+            patch("app.services.reverse_sync.settings.TEST_MODE", True),
+            patch(
+                "app.services.reverse_sync.settings.TEST_TASK_IDS",
+                "35591,35633",
+            ),
+        ):
+            assert _is_whitelisted_task(35591) is True
+            assert _is_whitelisted_task(35633) is True
+
+    def test_not_whitelisted_for_other_task(self) -> None:
+        from app.services.reverse_sync import _is_whitelisted_task
+
+        with (
+            patch("app.services.reverse_sync.settings.TEST_MODE", True),
+            patch(
+                "app.services.reverse_sync.settings.TEST_TASK_IDS",
+                "35591,35633",
+            ),
+        ):
+            assert _is_whitelisted_task(12345) is False
+            assert _is_whitelisted_task(0) is False
+
+    async def test_sync_one_task_refuses_non_whitelisted(self) -> None:
+        """A non-whitelisted task is refused before any DB/API call."""
+        from unittest.mock import MagicMock
+
+        from app.services.reverse_sync import _sync_one_task
+
+        bitrix = MagicMock()
+        glpi = MagicMock()
+        summary = {
+            "checked": 0,
+            "status_updated": 0,
+            "comments_sent": 0,
+            "errors": [],
+            "glpi_followups_read": 0,
+            "skipped_not_whitelisted": 0,
+        }
+
+        with (
+            patch(
+                "app.services.reverse_sync.settings.TEST_TASK_IDS",
+                "35591,35633",
+            ),
+            patch(
+                "app.services.reverse_sync.async_session_factory",
+                side_effect=AssertionError(
+                    "must not open a DB session for non-whitelisted task"
+                ),
+            ),
+        ):
+            await _sync_one_task(
+                bitrix_client=bitrix,
+                glpi_client=glpi,
+                task_id=99999,
+                summary=summary,
+            )
+
+        assert summary["skipped_not_whitelisted"] == 1
+        assert summary["checked"] == 0
+        bitrix.assert_not_called()
+        glpi.assert_not_called()
 
 
 # ===================================================================

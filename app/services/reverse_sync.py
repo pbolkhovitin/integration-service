@@ -27,6 +27,16 @@ _GLPI_TO_BITRIX_STATUS: dict[int, int] = {
 }
 
 
+def _is_whitelisted_task(task_id: int) -> bool:
+    """Return True only for tasks explicitly listed in TEST_TASK_IDS.
+
+    This is the single write-guard for Bitrix24: reverse sync must never
+    write to a task that is not on the test whitelist, regardless of how
+    it was invoked (scheduled job, manual endpoint, direct call).
+    """
+    return task_id in settings.test_task_ids
+
+
 def _extract_glpi_ticket_id(task: Task) -> int | None:
     """Extract GLPI ticket ID from a Task record's result field.
 
@@ -106,6 +116,7 @@ async def reverse_sync_test_tasks() -> dict:
         "comments_sent": 0,
         "errors": [],
         "glpi_followups_read": 0,
+        "skipped_not_whitelisted": 0,
     }
 
     try:
@@ -137,6 +148,16 @@ async def _sync_one_task(
     summary: dict,
 ) -> None:
     """Process a single test task for reverse sync."""
+    # Whitelist guard: never write to Bitrix24 for a non-test task.
+    if not _is_whitelisted_task(task_id):
+        logger.warning(
+            "Reverse sync: task %s is NOT in TEST_TASK_IDS whitelist — "
+            "refusing to write to Bitrix24",
+            task_id,
+        )
+        summary["skipped_not_whitelisted"] += 1
+        return
+
     # a. Query DB for Task
     async with async_session_factory() as db:
         result = await db.execute(
@@ -295,4 +316,5 @@ def get_reverse_sync_status() -> dict:
         "test_mode": settings.TEST_MODE,
         "test_task_ids": settings.test_task_ids,
         "active": bool(settings.TEST_MODE and settings.test_task_ids),
+        "auto_write_enabled": settings.BITRIX24_REVERSE_SYNC_ENABLED,
     }

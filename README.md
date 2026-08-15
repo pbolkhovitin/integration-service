@@ -201,7 +201,7 @@ uvicorn app.main:app --reload --port 8000
 | `POSTGRES_USER`                  | `integration` | Пользователь БД                  |
 | `BITRIX24_POLL_INTERVAL_SECONDS` | `60`        | Интервал опроса Bitrix24 (секунды)  |
 | `BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS` | `60` | Интервал обратной синхронизации GLPI→Bitrix24 (секунды) |
-| `BITRIX24_REVERSE_SYNC_ENABLED` | `false` | Разрешить **автозапись** в Bitrix24 по расписанию. `false` = Bitrix24 пишется только по явному запросу (`POST /sync/reverse-test`) |
+| `BITRIX24_REVERSE_SYNC_ENABLED` | `true` | Автозапись в Bitrix24 по расписанию. **Жёстко ограничена whitelist-задачами** (`TEST_TASK_IDS`) — в прод-задачи запись невозможна |
 | `CORS_ORIGINS`                | —           | Разрешённые CORS-origin через запятую (пусто = CORS отключен) |
 | `ADMIN_API_TOKEN`             | —           | Секрет для мутирующих эндпоинтов `/api/bitrix24/sync/*` (заголовок `X-Admin-Token`) |
 | `GLPI_DEFAULT_CATEGORY_ID`       | `1`         | Категория по умолчанию (Инцидент)   |
@@ -475,12 +475,13 @@ APScheduler-based poller, работающий внутри FastAPI процес
 #### Reverse Sync (`app/services/reverse_sync.py`)
 
 Обратная синхронизация — GLPI → Bitrix24. Работает **только** в test mode
-для whitelist-задач (ID из `TEST_TASK_IDS`). **Запись в Bitrix24 запрещена
-без явного запроса:** по умолчанию (`BITRIX24_REVERSE_SYNC_ENABLED=false`)
-reverse sync выполняется только вручную через
-`POST /api/bitrix24/sync/reverse-test`. Автоматический запуск по расписанию
-каждые `BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS` возможен только при
-`BITRIX24_REVERSE_SYNC_ENABLED=true`.
+для whitelist-задач (ID из `TEST_TASK_IDS`). **Запись в Bitrix24 разрешена
+только для задач из whitelist** (`TEST_TASK_IDS`): `_sync_one_task` проверяет
+каждый task_id перед записью и отказывается писать в любую другую задачу
+(счётчик `skipped_not_whitelisted`). Автоматически запускается по расписанию
+каждые `BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS`, если
+`BITRIX24_REVERSE_SYNC_ENABLED=true` (по умолчанию), и вручную через
+`POST /api/bitrix24/sync/reverse-test`.
 
 - **Механизм:**
   1. Читает из БД записи Task с source='bitrix24' и matching source_id

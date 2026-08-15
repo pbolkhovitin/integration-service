@@ -177,8 +177,26 @@ class TestSchedulerJobs:
         finally:
             self._shutdown(sched)
 
-    def test_reverse_sync_job_not_registered_by_default(self, monkeypatch) -> None:
-        """No Bitrix24 writes on schedule unless explicitly enabled."""
+    def test_reverse_sync_job_registered_by_default_in_test_mode(
+        self, monkeypatch
+    ) -> None:
+        """Auto reverse sync is on by default (whitelist-guarded)."""
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+        monkeypatch.setattr(settings, "TEST_MODE", True)
+        monkeypatch.setattr(settings, "TEST_TASK_IDS", "35591,35633")
+
+        sched = AsyncIOScheduler()
+        try:
+            poller._register_poller_jobs(sched)
+            ids = [j.id for j in sched.get_jobs()]
+            assert "bitrix24_reverse_sync" in ids
+        finally:
+            self._shutdown(sched)
+
+    def test_reverse_sync_job_not_registered_when_disabled(
+        self, monkeypatch
+    ) -> None:
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
         monkeypatch.setattr(settings, "BITRIX24_REVERSE_SYNC_ENABLED", False)
