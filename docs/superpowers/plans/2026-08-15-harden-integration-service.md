@@ -333,3 +333,20 @@ __table_args__ = (
 | `failed` after exhausting `max_attempts` is a dead end | `POST /sync/retry` for manual/periodic reprocessing (Task 3) |
 | 5-minute staleness threshold | Threshold = `max(2×poll_interval, 60)`; heartbeat via `processing` write (Task 3) |
 | Uniqueness implicit (idempotency_key) | Explicit unique index `(source, source_id)` + dedup migration (Task 9) |
+
+---
+
+## Post-plan update (2026-08-15)
+
+После выполнения плана уточнены требования к записи в Bitrix24:
+
+- **`BITRIX24_REVERSE_SYNC_ENABLED`** (Task 5) сначала был сделан default `false`
+  (запрет любых автоматических записей). Затем по требованию пользователя
+  **возвращён default `true`**, но с **жёсткой whitelist-защитой**:
+  `reverse_sync._sync_one_task` отказывается писать в любую задачу вне
+  `TEST_TASK_IDS` (счётчик `skipped_not_whitelisted`).
+- Тестовые задачи Bitrix24 `TEST_TASK_IDS=[35591, 35633]` — разрешённая
+  площадка для записи (тестирование/отладка); в прод-задачи запись
+  технически невозможна.
+- Статус-эндпоинты теперь отдают `reverse_sync.enabled`/`auto_enabled` и
+  `auto_write_enabled`.

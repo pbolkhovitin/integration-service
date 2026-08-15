@@ -2,7 +2,7 @@
 
 Сервис для синхронизации данных между **Bitrix24**, **GLPI** и **MANGO Office**.
 
-**Текущий статус:** MVP — опрос Bitrix24 REST API → создание тикетов в GLPI + обратная синхронизация статусов и комментариев (GLPI → Bitrix24, test mode).
+**Текущий статус:** MVP — опрос Bitrix24 REST API → создание тикетов в GLPI + обратная синхронизация статусов и комментариев (GLPI → Bitrix24, test mode). MVP укреплён: Bitrix24-вызовы вынесены из event loop, мутирующие эндпоинты закрыты `X-Admin-Token`, retry зависших/failed-задач, уникальность `(source, source_id)`, lifecycle GLPI-сессий, reverse sync по расписанию с whitelist-защитой.
 
 ## Поток данных (MVP — polling mode)
 
@@ -30,11 +30,15 @@
 
 | Сервис    | Назначение                                    | Порты          |
 |-----------|-----------------------------------------------|----------------|
-| `postgres`| PostgreSQL 15 (хранилище задач)               | `5433→5432`    |
+| `postgres`| PostgreSQL 15 (хранилище задач)               | `5432`         |
 | `api`     | FastAPI + APScheduler (poller внутри процесса) | `8000`         |
+| `redis`   | Redis 7 (в `docker-compose.yml`; пока не используется приложением) | `6379` |
 
-Два контейнера. Без Redis, Celery, Flower. Poller опрашивает Bitrix24 каждые N
-секунд и создает тикеты в GLPI синхронно внутри AsyncIO.
+`docker-compose.yml` (прод) — postgres, redis, api. `docker-compose.mvp.yml`
+(локальный быстрый старт) — postgres + api, без Redis. Celery/Flower не
+используются. Poller опрашивает Bitrix24 каждые N секунд и создаёт тикеты в
+GLPI синхронно; Bitrix24-вызовы выполняются в `asyncio.to_thread` (не блокируют
+event loop).
 
 Обратная синхронизация (GLPI → Bitrix24) работает в test mode для whitelist-задач:
 отслеживает изменение статуса и новые followup-комментарии в GLPI, обновляет
@@ -172,6 +176,28 @@ alembic upgrade head
 uvicorn app.main:app --reload --port 8000
 ```
 
+## Тестирование
+
+```bash
+# Полный прогон (test_bitrix.py — нереализованный Phase 2 — исключён)
+DATABASE_URL='postgresql+asyncpg://test:test@localhost:5432/test' \
+  python -m pytest -q --ignore=tests/test_bitrix.py
+
+# Проверка кода
+ruff check app tests
+mypy app
+```
+
+**Текущее состояние:** **233 проходящих теста**. 13 failed + 5 errors —
+предсуществующие, не входили в план харднинга:
+
+| Файл | Кол-во | Причина |
+|------|--------|---------|
+| `tests/test_glpi.py` | 6 | Устаревшие ожидания (метод `init_session` — GET, а не POST) |
+| `tests/test_settings.py` | 3 | Сравнение `SecretStr` с пустой строкой |
+| `tests/test_webhook_bitrix.py` | 4 failed + 5 errors | Эндпоинты Phase 2 (`/webhook/bitrix/lead`) ещё не реализованы |
+| `tests/test_bitrix.py` | — | Импортирует несуществующий `BitrixLead` (нереализованный Phase 2) |
+
 ## Переменные окружения
 
 ### Обязательные (MVP)
@@ -251,8 +277,12 @@ GET  /ready
 
 GET  /api/bitrix24/sync/status
   → 200 {"status": "running", "interval_seconds": 60,
-         "responsible_ids": [70], "next_run": "2025-..."
-  Статус poller'а: интервал, ID ответственных, следующий запуск.
+         "responsible_ids": [70], "next_run": "2025-...",
+         "reverse_sync": {"enabled": true, "auto_enabled": true,
+                          "interval_seconds": 60, "next_run": "..."}}
+  Статус poller'а: интервал, ID ответственных, следующий запуск,
+  состояние reverse sync (enabled — джоб зарегистрирован,
+  auto_enabled — разрешена автозапись в Bitrix24).
 
 POST /api/bitrix24/sync/trigger   (требует X-Admin-Token)
   → 200 {"status": "completed"}
@@ -269,8 +299,10 @@ POST /api/bitrix24/sync/retry      (требует X-Admin-Token)
   для повторной обработки следующим poll-циклом.
 
 GET  /api/bitrix24/sync/reverse-status
-  → 200 {"test_mode": true, "test_task_ids": [35591, 35633], "active": true}
-  Статус reverse sync: включён ли test mode, какие ID задач отслеживаются.
+  → 200 {"test_mode": true, "test_task_ids": [35591, 35633], "active": true,
+         "auto_write_enabled": true}
+  Статус reverse sync: включён ли test mode, whitelist-задачи,
+  разрешена ли автозапись в Bitrix24.
 
 POST /api/bitrix24/sync/reverse-test (требует X-Admin-Token)
   → 200 {"checked": 2, "status_updated": 1, "comments_sent": 3, ...}
@@ -324,7 +356,11 @@ GET  /tasks?status=pending&source=bitrix&limit=50&offset=0
 | `created_at`       | `TIMESTAMPTZ`           | Дата создания                                |
 | `updated_at`       | `TIMESTAMPTZ`           | Дата обновления                              |
 
-**Индексы:** `ix_tasks_status`, `ix_tasks_source`, `ix_tasks_idempotency_key` (partial unique), `ix_tasks_lease`.
+**Индексы:** `ix_tasks_status`, `ix_tasks_source`, `ix_tasks_idempotency_key`
+(partial unique), `ix_tasks_lease`, **`ix_tasks_source_source_id` (UNIQUE на
+`(source, source_id)`)** — гарантирует, что задача из Bitrix24 создаёт только
+один тикет GLPI. Индекс добавлен миграцией `a1b2c3d4e5f6`
+(дедуп-удаление дублей + unique index).
 
 ### Таблица `task_attempts`
 
@@ -359,7 +395,7 @@ asyncpg (см. раздел "Известные проблемы" ниже).
 integration-service/
 ├── app/
 │   ├── api/
-│   │   └── bitrix.py           # /api/bitrix24/sync/* — status, trigger, cleanup, reverse-status, reverse-test
+│   │   └── bitrix.py           # /api/bitrix24/sync/* — status, trigger, cleanup, retry, reverse-status, reverse-test
 │   ├── config/
 │   │   └── settings.py         # Pydantic Settings (переменные окружения)
 │   ├── core/
@@ -503,41 +539,50 @@ APScheduler-based poller, работающий внутри FastAPI процес
 - **API endpoints:** `GET /api/bitrix24/sync/reverse-status`,
   `POST /api/bitrix24/sync/reverse-test`
 
-## Деплой на infrastructure
+## Деплой на signal-glpi (Proxmox)
 
 ### Текущая конфигурация (MVP)
 
-- **Сервер:** VM в Proxmox (Debian 13, 4 vCPU, 8GB RAM, 20GB disk)
-- **Docker-проекты:**
+- **Сервер:** `signal-glpi` (VM в Proxmox, Debian). SSH: `ssh root@signal-glpi`
+- **Docker-проекты** (в `/opt/...`):
+  - `integration-service` — `docker-compose.yml`: **postgres, redis, api** (3 контейнера)
   - `glpi` (glpi-app, glpi-db, glpi-dbgate, glpi-mailpit, glpi-openldap)
-  - `sla-dashboard` (SLA-мониторинг, SQLite)
-  - `integration-service` (postgres, api) — MVP
-- **Сети:**
-  - `glpi_default` — GLPI контейнеры + integration-api
-  - `integration_default` — integration-api + integration-postgres
-- **Порты:**
-  - GLPI: `:8080` → glpi-app
-  - Integration API: `:8000` → integration-api
-  - Integration PostgreSQL: `:5433` → postgres:5432
+  - `mts-stats`, `sla-dashboard`, `docs-signal-infa`, `homer`, `traefik`
+- **Сети:** `integration-net` (postgres, redis, api)
+- **Порты/маршрутизация:**
+  - Integration API: `:8000` → `integration-api` (+ traefik router `Host(api.ais.local)`)
+  - Integration PostgreSQL: `:5432` → `integration-postgres`
+  - Integration Redis: `:6379` → `integration-redis` (зарезервирован под Phase 2)
+  - GLPI: `:8080`/`:8090` → `glpi-app`
+- **Резервный** `docker-compose.mvp.yml` — 2 контейнера (postgres + api) для локального быстрого старта без Redis.
 
-### Git hooks
+### Деплой обновлений
 
 ```bash
-# Деплой через SSH
-ssh -i ~/.ssh/<your-key> root@<server-ip>
-
-# Обновление кода
+ssh root@signal-glpi
 cd /opt/integration-service
+
+# 1. Обновление кода
 git pull origin main
 
-# Пересборка и перезапуск
-docker compose -f docker-compose.mvp.yml build api
-docker compose -f docker-compose.mvp.yml up -d api
+# 2. Пересборка и перезапуск API
+docker compose up -d --build api
 
-# Применение миграций (если есть новые)
-docker exec -e DATABASE_URL='postgresql+asyncpg://integration:integration123@postgres:5432/integration' \
-  integration-api alembic upgrade head
+# 3. Применение миграций (вручную — Dockerfile не запускает alembic)
+docker exec integration-api alembic upgrade head
+
+# 4. Проверка
+curl -s http://localhost:8000/health
+curl -s http://localhost:8000/api/bitrix24/sync/status
 ```
+
+> **Перед деплоем:**
+> - В `/opt/integration-service/.env` должны быть заданы `ADMIN_API_TOKEN`
+>   (и при необходимости `CORS_ORIGINS`) — иначе мутирующие эндпоинты
+>   (`/sync/trigger`, `/sync/cleanup`, `/sync/retry`, `/sync/reverse-test`)
+>   отвечают `401`.
+> - Перед применением миграции с unique-индексом (`a1b2c3d4e5f6`) сделать
+>   бэкап БД — дедуп-удаление дублей `(source, source_id)` необратимо.
 
 ## Известные проблемы и решения
 
@@ -622,7 +667,13 @@ UPDATE glpi_configs SET value='1' WHERE context='core' AND name='enable_api';
 - [x] Reverse sync (GLPI → Bitrix24): статусы и followup'ы в test mode
 - [x] Reconciliation: авто-закрытие GLPI тикетов при удалении задачи в Bitrix24
 - [x] Description-append для задач без forumTopicId
-- [x] 80 pytest-тестов для reverse sync
+- [x] 233 проходящих pytest-теста (reverse sync, poller, API, миграции)
+- [x] Bitrix24-вызовы в `asyncio.to_thread` — снятие блокировки event loop
+- [x] Аутентификация мутирующих эндпоинтов (`X-Admin-Token`) + условный CORS
+- [x] Retry зависших/failed-задач + ручной `POST /sync/retry`
+- [x] Уникальность `(source, source_id)` — unique index + дедуп-миграция `a1b2c3d4e5f6`
+- [x] Жизненный цикл GLPI-сессий (`kill_session`) + дефолтные category/group/entity
+- [x] Reverse sync по расписанию с whitelist-защитой (запись только в `TEST_TASK_IDS`)
 
 ### Phase 2 (Production) — Планируется
 
