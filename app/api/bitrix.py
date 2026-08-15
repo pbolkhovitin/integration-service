@@ -5,6 +5,10 @@ import logging
 from fastapi import APIRouter, Depends, Header, HTTPException
 
 from app.config.settings import settings
+from app.services.org_sync import (
+    get_org_sync_status,
+    sync_org_structure,
+)
 from app.services.poller import (
     _poll_bitrix24,
     cleanup_orphaned_tasks,
@@ -99,4 +103,26 @@ async def reverse_sync_trigger() -> dict:
     """
     logger.info("Manual reverse sync triggered via API")
     result = await reverse_sync_test_tasks()
+    return result
+
+
+@router.get("/sync/org-status")
+async def org_sync_status() -> dict:
+    """Get org sync (users/departments) configuration status."""
+    return get_org_sync_status()
+
+
+@router.post(
+    "/sync/org",
+    dependencies=[Depends(require_admin_token)],
+)
+async def org_sync_trigger() -> dict:
+    """Mirror Bitrix24 departments and users into GLPI.
+
+    Requires ``BITRIX24_ORG_WEBHOOK_URL`` (webhook with ``user`` and
+    ``department`` scopes) and a GLPI API user with rights to create
+    entities and users.
+    """
+    logger.info("Manual org sync triggered via API")
+    result = await sync_org_structure()
     return result

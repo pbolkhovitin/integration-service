@@ -20,6 +20,7 @@ from app.core.database import async_session_factory
 from app.models.task import Task
 from app.services.bitrix import BitrixClient
 from app.services.glpi import GLPIClient
+from app.services.org_sync import sync_org_structure
 from app.services.reverse_sync import reverse_sync_test_tasks
 
 logger = logging.getLogger(__name__)
@@ -638,6 +639,15 @@ def _register_poller_jobs(scheduler: AsyncIOScheduler) -> None:
             seconds=settings.BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS,
             id="bitrix24_reverse_sync",
             name="Bitrix24 Reverse Sync (GLPI -> Bitrix24)",
+            max_instances=1,
+        )
+    if settings.ORG_SYNC_ENABLED and settings.BITRIX24_ORG_WEBHOOK_URL:
+        scheduler.add_job(
+            sync_org_structure,
+            "interval",
+            seconds=settings.ORG_SYNC_INTERVAL_SECONDS,
+            id="bitrix24_org_sync",
+            name="Bitrix24 Org Sync (users + departments)",
             max_instances=1,
         )
 

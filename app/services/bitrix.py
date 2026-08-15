@@ -248,6 +248,69 @@ class BitrixClient:
         )
         return result.get("result", {}).get("task", {})
 
+    def get_departments(self) -> list[dict[str, Any]]:
+        """Get the company department tree from Bitrix24.
+
+        Uses ``department.get.json``. Each department has ``ID``, ``NAME``,
+        ``PARENT`` (parent department ID or None for the root), ``UF_HEAD``.
+
+        Requires a webhook token with the ``department`` scope (the task
+        polling token does not have it).
+
+        Returns:
+            List of department dicts with ``ID``/``NAME``/``PARENT`` keys.
+
+        Raises:
+            RuntimeError: On HTTP failure or missing scope.
+        """
+        result = self._call("department.get.json")
+        departments = result.get("result", [])
+        normalized = []
+        for d in departments or []:
+            parent = d.get("PARENT")
+            normalized.append(
+                {
+                    "id": int(d.get("ID")),
+                    "name": str(d.get("NAME", "")),
+                    "parent_id": int(parent) if parent else None,
+                }
+            )
+        return normalized
+
+    def get_users(self, start: int = 0) -> dict[str, Any]:
+        """Get active users from Bitrix24 (paginated, 50 per page).
+
+        Uses ``user.get.json``. Each user has ``ID``, ``NAME``, ``LAST_NAME``,
+        ``SECOND_NAME``, ``EMAIL``, ``WORK_POSITION``, ``ACTIVE``,
+        ``UF_DEPARTMENT`` (list of department IDs).
+
+        Requires a webhook token with the ``user`` scope.
+
+        Args:
+            start: Pagination offset (0, 50, 100, ...).
+
+        Returns:
+            Dict with ``users`` (normalized list) and ``next`` offset.
+        """
+        result = self._call("user.get.json", params={"start": start})
+        users = result.get("result", [])
+        normalized = []
+        for u in users or []:
+            normalized.append(
+                {
+                    "id": int(u.get("ID")),
+                    "name": str(u.get("NAME", "")),
+                    "last_name": str(u.get("LAST_NAME", "")),
+                    "email": str(u.get("EMAIL", "") or ""),
+                    "work_position": str(u.get("WORK_POSITION", "") or ""),
+                    "active": bool(u.get("ACTIVE", False)),
+                    "department_ids": [
+                        int(x) for x in (u.get("UF_DEPARTMENT") or [])
+                    ],
+                }
+            )
+        return {"users": normalized, "next": result.get("next", 0)}
+
     def _call(
         self,
         method: str,

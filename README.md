@@ -188,7 +188,7 @@ ruff check app tests
 mypy app
 ```
 
-**Текущее состояние:** **233 проходящих теста**. 13 failed + 5 errors —
+**Текущее состояние:** **239 проходящих теста**. 13 failed + 5 errors —
 предсуществующие, не входили в план харднинга:
 
 | Файл | Кол-во | Причина |
@@ -228,6 +228,11 @@ mypy app
 | `BITRIX24_POLL_INTERVAL_SECONDS` | `60`        | Интервал опроса Bitrix24 (секунды)  |
 | `BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS` | `60` | Интервал обратной синхронизации GLPI→Bitrix24 (секунды) |
 | `BITRIX24_REVERSE_SYNC_ENABLED` | `true` | Автозапись в Bitrix24 по расписанию. **Жёстко ограничена whitelist-задачами** (`TEST_TASK_IDS`) — в прод-задачи запись невозможна |
+| `BITRIX24_ORG_WEBHOOK_URL` | — | Вебхук Bitrix24 **с правами `user` + `department`** для org sync (обычный `BITRIX24_WEBHOOK_URL` их не имеет). Пусто = org sync выключен |
+| `ORG_SYNC_ENABLED` | `false` | Автозапуск org sync по расписанию (ручной `POST /api/bitrix24/sync/org` работает всегда) |
+| `ORG_SYNC_INTERVAL_SECONDS` | `3600` | Интервал org sync (секунды) |
+| `ORG_SYNC_ROOT_ENTITY_ID` | `25` | Корневая GLPI-entity, под которую зеркалится дерево отделов Bitrix24 («АО «АПО «Аврора») |
+| `ORG_SYNC_USER_PROFILE_ID` | `1` | GLPI-профиль для синхронизируемых пользователей (1 = Self-Service) |
 | `CORS_ORIGINS`                | —           | Разрешённые CORS-origin через запятую (пусто = CORS отключен) |
 | `ADMIN_API_TOKEN`             | —           | Секрет для мутирующих эндпоинтов `/api/bitrix24/sync/*` (заголовок `X-Admin-Token`) |
 | `GLPI_DEFAULT_CATEGORY_ID`       | `1`         | Категория по умолчанию (Инцидент)   |
@@ -308,6 +313,20 @@ POST /api/bitrix24/sync/reverse-test (требует X-Admin-Token)
   → 200 {"checked": 2, "status_updated": 1, "comments_sent": 3, ...}
   Ручной запуск обратной синхронизации (GLPI статусы → Bitrix24).
   Работает только для whitelist-задач при TEST_MODE=True.
+
+GET  /api/bitrix24/sync/org-status
+  → 200 {"org_sync_enabled": false, "org_webhook_configured": true,
+         "root_entity_id": 25, "user_profile_id": 1, "interval_seconds": 3600}
+  Статус org sync: настройки переноса пользователей/отделов.
+
+POST /api/bitrix24/sync/org (требует X-Admin-Token)
+  → 200 {"departments_total": 50, "departments_created": 48,
+         "users_total": 379, "users_active": 340,
+         "users_created": 300, "users_updated": 40, "errors": []}
+  Перенос оргструктуры Bitrix24 → GLPI: зеркалит дерево отделов в
+  GLPI-entity (под ORG_SYNC_ROOT_ENTITY_ID) и создаёт/обновляет
+  пользователей (матчинг по email, профиль ORG_SYNC_USER_PROFILE_ID).
+  Требует BITRIX24_ORG_WEBHOOK_URL (права user+department).
 ```
 
 ### Production (Phase 2+)
@@ -410,6 +429,7 @@ integration-service/
 │   │   ├── glpi.py             # GLPIClient — REST API клиент GLPI
 │   │   ├── poller.py           # APScheduler poller — опрос Bitrix24 → создание GLPI тикетов
 │   │   └── reverse_sync.py     # Обратная синхронизация GLPI→Bitrix24 (status + followups)
+│   │   └── org_sync.py         # Перенос пользователей и отделов Bitrix24 → GLPI
 │   └── main.py                 # FastAPI app, lifespan, health/ready probes
 ├── alembic/                    # Миграции БД
 │   └── versions/
@@ -539,6 +559,29 @@ APScheduler-based poller, работающий внутри FastAPI процес
 - **API endpoints:** `GET /api/bitrix24/sync/reverse-status`,
   `POST /api/bitrix24/sync/reverse-test`
 
+#### Org Sync (`app/services/org_sync.py`)
+
+Перенос пользователей и оргструктуры из Bitrix24 в GLPI. Требует вебхука
+`BITRIX24_ORG_WEBHOOK_URL` с правами **`user` + `department`** (обычный
+`BITRIX24_WEBHOOK_URL` их не имеет) и GLPI API-пользователя с правами на
+создание сущностей и пользователей.
+
+- **Отделы:** полное дерево `department.get` зеркалится в GLPI-entity под
+  `ORG_SYNC_ROOT_ENTITY_ID` (по умолч. 25 — «АО «АПО «Аврора»). Существующие
+  сущности матчатся по имени (case-insensitive), недостающие создаются;
+  иерархия Bitrix24 сохраняется.
+- **Пользователи:** `user.get` (постранично). Активные пользователи
+  создаются/обновляются в GLPI, матчинг по **email** (case-insensitive,
+  через `glpi_useremails`). Логин = email (или `b24_{id}`, если email нет),
+  профиль = `ORG_SYNC_USER_PROFILE_ID` (по умолч. 1 — Self-Service),
+  дефолтная entity = entity отдела пользователя (первый из `UF_DEPARTMENT`).
+- **Идемпотентность:** повторный запуск создаёт только недостающее и
+  обновляет ФИО/entity.
+- **Запуск:** вручную `POST /api/bitrix24/sync/org` (с `X-Admin-Token`);
+  по расписанию — при `ORG_SYNC_ENABLED=true` (интервал
+  `ORG_SYNC_INTERVAL_SECONDS`, джоб `bitrix24_org_sync`).
+- **Статус:** `GET /api/bitrix24/sync/org-status`
+
 ## Деплой на signal-glpi (Proxmox)
 
 ### Текущая конфигурация (MVP)
@@ -667,13 +710,14 @@ UPDATE glpi_configs SET value='1' WHERE context='core' AND name='enable_api';
 - [x] Reverse sync (GLPI → Bitrix24): статусы и followup'ы в test mode
 - [x] Reconciliation: авто-закрытие GLPI тикетов при удалении задачи в Bitrix24
 - [x] Description-append для задач без forumTopicId
-- [x] 233 проходящих pytest-теста (reverse sync, poller, API, миграции)
+- [x] 239 проходящих pytest-теста (reverse sync, poller, API, миграции)
 - [x] Bitrix24-вызовы в `asyncio.to_thread` — снятие блокировки event loop
 - [x] Аутентификация мутирующих эндпоинтов (`X-Admin-Token`) + условный CORS
 - [x] Retry зависших/failed-задач + ручной `POST /sync/retry`
 - [x] Уникальность `(source, source_id)` — unique index + дедуп-миграция `a1b2c3d4e5f6`
 - [x] Жизненный цикл GLPI-сессий (`kill_session`) + дефолтные category/group/entity
 - [x] Reverse sync по расписанию с whitelist-защитой (запись только в `TEST_TASK_IDS`)
+- [x] Org sync: перенос пользователей и оргструктуры Bitrix24 → GLPI (дерево отделов в entity, матчинг по email)
 
 ### Phase 2 (Production) — Планируется
 

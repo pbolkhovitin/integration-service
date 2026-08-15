@@ -40,6 +40,19 @@ class Settings(BaseSettings):
     GLPI_DEFAULT_GROUP_ID: int = 1  # IT-поддержка L1
     GLPI_DEFAULT_ENTITY_ID: int = 2  # Департамент IT
 
+    # Org sync (Bitrix24 users + departments → GLPI).
+    # BITRIX24_ORG_WEBHOOK_URL — webhook WITH user/department scope (the
+    # regular BITRIX24_WEBHOOK_URL does not have these rights). Empty =
+    # org sync disabled.
+    BITRIX24_ORG_WEBHOOK_URL: str = ""
+    # Run org sync on a schedule (manual POST /api/bitrix24/sync/org always works).
+    ORG_SYNC_ENABLED: bool = False
+    ORG_SYNC_INTERVAL_SECONDS: int = 3600
+    # GLPI root entity under which the Bitrix24 department tree is mirrored.
+    ORG_SYNC_ROOT_ENTITY_ID: int = 25  # АО «АПО «Аврора»
+    # GLPI profile assigned to synced users (1 = Self-Service).
+    ORG_SYNC_USER_PROFILE_ID: int = 1
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

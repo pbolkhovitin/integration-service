@@ -271,6 +271,125 @@ class GLPIClient:
         return []
 
     # ------------------------------------------------------------------
+    # Org sync — entities, users, user emails
+    # ------------------------------------------------------------------
+
+    def get_entities(self, session_token: str) -> list[dict[str, Any]]:
+        """Return the full list of GLPI entities (id, name, parent id)."""
+        result = self._call(
+            method="GET",
+            url=f"{self._base_url}/apirest.php/Entity",
+            session_token=session_token,
+        )
+        if not isinstance(result, list):
+            return []
+        return [
+            {
+                "id": int(e.get("id")),
+                "name": str(e.get("name", "")),
+                "parent_id": int(e.get("entities_id"))
+                if e.get("entities_id") is not None
+                else None,
+            }
+            for e in result
+        ]
+
+    def create_entity(
+        self, name: str, parent_id: int, session_token: str
+    ) -> dict[str, Any]:
+        """Create a GLPI entity under *parent_id*."""
+        payload: dict[str, Any] = {
+            "input": {"name": name, "entities_id": parent_id}
+        }
+        return self._call(
+            method="POST",
+            url=f"{self._base_url}/apirest.php/Entity",
+            json_body=payload,
+            session_token=session_token,
+        )
+
+    def get_user_emails(self, session_token: str) -> list[dict[str, Any]]:
+        """Return all GLPI user emails (users_id → email)."""
+        emails: list[dict[str, Any]] = []
+        start = 0
+        page_size = 100
+        while True:
+            result = self._call(
+                method="GET",
+                url=f"{self._base_url}/apirest.php/UserEmail",
+                params={"range": f"{start}-{start + page_size - 1}"},
+                session_token=session_token,
+            )
+            if not isinstance(result, list) or not result:
+                break
+            for e in result:
+                emails.append(
+                    {
+                        "users_id": int(e.get("users_id")),
+                        "email": str(e.get("email", "")),
+                        "is_default": bool(e.get("is_default")),
+                    }
+                )
+            if len(result) < page_size:
+                break
+            start += page_size
+        return emails
+
+    def create_user(
+        self,
+        *,
+        name: str,
+        realname: str,
+        firstname: str,
+        email: str | None,
+        entities_id: int,
+        profiles_id: int,
+        session_token: str,
+    ) -> dict[str, Any]:
+        """Create a GLPI user (login=*name*, email via ``_useremails``)."""
+        fields: dict[str, Any] = {
+            "name": name,
+            "realname": realname,
+            "firstname": firstname,
+            "entities_id": entities_id,
+            "profiles_id": profiles_id,
+        }
+        if email:
+            fields["_useremails"] = [email]
+        return self._call(
+            method="POST",
+            url=f"{self._base_url}/apirest.php/User",
+            json_body={"input": fields},
+            session_token=session_token,
+        )
+
+    def update_user(
+        self,
+        user_id: int,
+        *,
+        realname: str | None = None,
+        firstname: str | None = None,
+        entities_id: int | None = None,
+        session_token: str,
+    ) -> dict[str, Any]:
+        """Update a GLPI user's name/entity."""
+        fields: dict[str, Any] = {}
+        if realname is not None:
+            fields["realname"] = realname
+        if firstname is not None:
+            fields["firstname"] = firstname
+        if entities_id is not None:
+            fields["entities_id"] = entities_id
+        if not fields:
+            return {}
+        return self._call(
+            method="PUT",
+            url=f"{self._base_url}/apirest.php/User/{user_id}",
+            json_body={"input": fields},
+            session_token=session_token,
+        )
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
