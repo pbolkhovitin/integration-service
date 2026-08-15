@@ -1,292 +1,226 @@
-# Маппинг Bitrix24 → GLPI (расширенный) + SLA-отчёт в GLPI. Phase 1.5 Implementation Plan
+# Маппинг Bitrix24 → GLPI (расширенный) + SLA-отчёт + L1-процесс. Phase 1.5 Implementation Plan (v2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Максимально полно переносить задачи Bitrix24 в тикеты GLPI (пользователи, оргструктура, даты, категории, SLA-данные) и реализовать в GLPI SLA-отчёт, аналогичный `/home/pbolk/bitrix24-add-report`, через нестандартные решения в GLPI-плагинах (сохраняя возможность обновления GLPI).
+**Goal:** Полноценная двусторонняя синхронизация Bitrix24 ↔ GLPI: максимально полный маппинг задачи B24 в тикет GLPI, возврат обработанной задачи в B24 по шаблону L1 (статус/комментарии/учёт времени), SLA-отчёт в GLPI, импорт активов. GLPI — основная сервисная программа.
 
-**Architecture:** Нестандартные данные — в GLPI-плагинах (не в ядре). Стандартные — в поля ядра тикета через API. Маппинг пользователей/отделов — через таблицы соответствий в БД интеграционного сервиса, заполняемые org sync. SLA — нативные SLA GLPI + плагин для специфичных метрик отчёта.
+**Architecture:** Стандартные данные — в поля ядра тикета через GLPI REST API. Нестандартные — в **существующие активные плагины** (Fields, Tag), не пишем свои без необходимости. Отчёты — нативные дашборды + Metabase/Mreporting. Активы — нативный инвентарь + Datainjection + скрипты из docs-signal-infa/NetBox. Синхронизация B24↔GLPI — расширение текущего интеграционного сервиса (свой код — плагина для B24 нет).
 
-**Tech Stack:** FastAPI (интеграционный сервис), GLPI REST API, GLPI-плагины (PHP, GLPI 10.x), pytest, MariaDB.
+**Tech Stack:** FastAPI (интеграционный сервис), GLPI 10.x REST API, GLPI-плагины (Fields, Tag, Datainjection, Mreporting/Metabase, Behaviors), pytest, MariaDB, netBox/docs-signal-infa (активы).
 
 ---
 
-## 1. Текущее состояние (анализ)
+## 1. Текущее состояние и gap-анализ
 
-Сейчас тикет GLPI создаётся так (`app/services/poller.py:273-303`):
-- `name = "[Bitrix24 #{task_id}] {title}"`
-- `content = _build_ticket_content(task_data)` — **плоский текст**: ID, Title, Created, Deadline, Responsible ID, Created by ID, Tags, Description.
-- `category_id/group_id/entity_id` — из `GLPI_DEFAULT_*` (константы, одинаковые для всех).
+Тикет создаётся плоско (`app/services/poller.py:273-303`): `name="[Bitrix24 #{ID}] {TITLE}"`, `content` — текст-дамп, `category/group/entity` — константы `GLPI_DEFAULT_*`. Не маппятся: постановщик, ответственный, даты (создание/дедлайн/закрытие), приоритет, статус, категория, теги, группа, комментарии, трудозатраты, `externalid`.
 
-**Gap-анализ (чего нет):**
+Проблемы, требующие полной очистки БД:
+1. 3148 существующих тикетов созданы плоским текстом — их нельзя перевести на новый маппинг без пересоздания.
+2. В БД остались тестовые артефакты и «грязные» связи.
+3. Новая модель (пользователи/отделы/категории/SLA) требует чистого старта для гарантии полноты и порядка.
 
-| Данные Bitrix24 | Сейчас | Нужно |
-|---|---|---|
-| Постановщик `CREATED_BY` | только ID текстом | → requester тикета (`glpi_tickets_users` role 1) |
-| Ответственный `RESPONSIBLE_ID` | только ID текстом | → техник/assignee (`glpi_tickets_users` role 2) |
-| Дата создания `CREATED_DATE` | текстом | → поле `date` тикета |
-| Дедлайн `DEADLINE` | текстом | → `time_to_resolve` (SLA) |
-| Дата закрытия `CLOSED_DATE` | нет | → `closedate` / `solvedate` |
-| Статус `STATUS` (1-7) | текстом (status пропускается при 4-7) | → статус тикета (маппинг) |
-| Приоритет `PRIORITY` (1-4) | нет | → `priority` тикета |
-| Категория (дериват) | нет | → `itilcategories_id` (через keyword-классификатор) |
-| Теги `TAGS` | текстом в content | → теги тикета / поле плагина |
-| Группа `GROUP_ID` | нет | → assign-группа |
-| Комментарии B24 | нет | → followup'ы при создании |
-| Трудозатраты `elapsed`/`DURATION_FACT_SECONDS` | нет | → поле плагина |
-| История статусов | нет | → history GLPI + поле плагина (b24_status) |
-| `externalid` | нет | → поле `externalid` ядра тикета (ID задачи B24) |
-| Признак клиента (XLSX) | нет | → поле плагина (для SLA-отчёта) |
+**Решение: полная очистка БД GLPI → чистый старт синхронизации** (см. раздел 4).
 
-## 2. Цели этапа (Phase 1.5)
+## 2. Исследование существующих решений (plugins.glpi-project.org) — результат
 
-1. Полный маппинг полей задачи Bitrix24 → тикет GLPI (ядро + плагин).
-2. Соответствия пользователей/отделов B24↔GLPI (используя org sync) и назначение requester/tech/entity.
-3. Перенос комментариев и тегов B24.
-4. Категоризация задач в категории GLPI (keyword-классификатор из b24-add-report).
-5. Настройка SLA GLPI по приоритетам.
-6. SLA-отчёт в GLPI (аналог b24-add-report): нестандартные метрики — в плагине.
-7. Вся нестандартная логика — в GLPI-плагинах (обновление GLPI без конфликтов).
+Изучены официальные репозитории `pluginsGLPI/*` (актуальность проверена по GitHub; `main` → GLPI 11, совместимая линия — ветки `10.0/bugfixes`).
 
-## 3. Целевой маппинг полей
-
-### 3.1 Ядро тикета GLPI (стандартные поля, переживают обновления)
-
-| Bitrix24 поле | GLPI поле | Примечание |
-|---|---|---|
-| `ID` | `externalid` | ИД задачи B24. Имя тикета: `[Bitrix24 #{ID}] {TITLE}` (для видимости) |
-| `TITLE` | `name` | Название тикета |
-| `DESCRIPTION` | `content` | Чистый текст описания (без служебных заголовков) |
-| `CREATED_DATE` | `date` | Дата создания тикета = дата задачи |
-| `CLOSED_DATE` | `closedate`, `solvedate` | Если задача закрыта в B24 |
-| `DEADLINE` | `time_to_resolve` | Дедлайн → резолв-тайм (SLA) |
-| `PRIORITY` | `priority` | Маппинг 1→1, 2→3, 3→4, 4→5 (настраиваемо) |
-| `STATUS` | `status` | Маппинг (см. 3.3) |
-| Категория (дериват) | `itilcategories_id` | keyword-классификатор → категория GLPI |
-| `CREATED_BY` | requester | `glpi_tickets_users` role 1 (через org-маппинг) |
-| `RESPONSIBLE_ID` | assignee | `glpi_tickets_users` role 2 (через org-маппинг) |
-| `GROUP_ID` | assign group | `glpi_groups_tickets` (через группу из плагина/маппинга) |
-| `UF_DEPARTMENT` | `entities_id` | entity = орг-маппинг отдела (org sync) |
-| `COMMENTS` | followup'ы | `glpi_itilfollowups` при создании |
-
-### 3.2 Поля плагина `b24fields` (нет в ядре — нестандартные)
-
-| Bitrix24 | Поле плагина | Тип | Назначение |
+| Плагин | Статус | GLPI 10 | Оценка для наших задач |
 |---|---|---|---|
-| `ID` | `b24_task_id` | int | Дублирование для надёжности (если externalid не используется) |
-| `STATUS` (raw) | `b24_status` | int | Исходный статус B24 (для SLA-анализа) |
-| `CHANGED_DATE` | `b24_changed_date` | datetime | Последнее изменение в B24 |
-| `CREATED_BY` | `b24_created_by` | int | ИД постановщика в B24 |
-| `DURATION_FACT_SECONDS` | `b24_duration_fact` | int | Плановые трудозатраты |
-| `elapsed` | `b24_elapsed_seconds` | int | Фактические трудозатраты (агрегировано) |
-| `GROUP_ID`/группа | `b24_group_name` | string | Имя группы задачи B24 |
-| Теги | `b24_tags` | string | Теги (если не используем теги ядра) |
-| Признак клиента | `b24_client_sign` | string | Из XLSX-маппинга (SLA-отчёт) |
-| `UF_DEPARTMENT` root | `b24_department_path` | string | Путь отдела (компания/подразделение) |
+| **Fields** (поля на тикетах) | **Активен** (1.24.4, 2026-08) | Да (1.21.x на `10.0/bugfixes`) | **Берём как есть.** Официальные кастомные поля на Ticket (b24_id, b24_status, даты, трудозатраты, клиент, отдел). Заменяет самописный `b24fields`. |
+| **Tag** (теги) | **Активен** (2.12.5) | Да | **Берём.** Метка `bitrix24:<id>` на тикетах как доп. перекрёстная ссылка. |
+| **Datainjection** (импорт CSV/API) | **Активен** (2.14.4) | Да | **Берём.** Импорт CSV (NetBox-выгрузки, активы) в CMDB/тикеты. |
+| **Metabase** (дашборды SQL) | **Активен** (1.3.3) | Да | **Берём.** Пользовательский SLA-дашборд по SQL (аналог отчёта b24-add-report). |
+| **Mreporting** (отчёты) | **Активен** (1.8.11) | Да | **Опция** (лёгкая альтернатива Metabase — отчёты внутри GLPI). |
+| **Behaviors** (эскалация/SLA-автоматика) | Активный форк (Gastador/behaviors 3.0.7) | Да | **Опция.** Автоназначение, эскалация, дедлайны. |
+| **Escalade / Satisfaction** | Активны | Да | **Опция** для эскалации/удовлетворённости. |
+| Нативный инвентарь GLPI | Ядро | Да | **Используем.** Учёт активов (агент glpi-agent). |
+| **Bitrix24 ↔ GLPI** плагин | Нет адекватного (только одиночный репо-прототип matheuslopes9/integracao-bitrix-glpi) | — | **Свой код** (текущий интеграционный сервис + webhook-паттерн из репо как референс). |
+| **NetBox → GLPI** коннектор | Нет сопровождаемого | — | **Свои скрипты** (CSV → Datainjection или прямой API-импорт). |
 
-### 3.3 Маппинг статусов (настраиваемый)
+### Решение «своё vs существующее»
 
-| Bitrix24 | GLPI | Комментарий |
+| Потребность | Решение | Экономия vs своя разработка |
 |---|---|---|
-| 1 — new | 1 — new | |
-| 2 — pending | 4 — waiting | Ожидает |
-| 3 — in progress | 2 — assigned | В работе |
-| 4 — awaiting control | 4 — waiting | |
-| 5 — completed | 5 — solved | (или 6 — closed) |
-| 6 — deferred | 4 — waiting | |
+| Кастомные поля тикета | **Fields** (установка/конфиг) | ~4-5 дней разработки плагина |
+| SLA-отчёт/дашборд | **Metabase** (SQL-карточки) или Mreporting | ~3-4 дня (плагин-отчёт) |
+| Импорт активов | **Datainjection** + нативный инвентарь | ~2-3 дня |
+| Метки происхождения | **Tag** | ~0.5 дня |
+| Синхронизация B24↔GLPI | **Свой код** (нет плагина) | — (уже есть интеграционный сервис) |
+| Импорт NetBox/docs-signal-infa | **Свои скрипты** → GLPI API | ~2-3 дня |
 
-> Примечание: сейчас poller **пропускает** задачи со статусом 4,5,6,7 (не создаёт тикеты). Для полноты переноса нужно **создавать** тикеты и для закрытых задач (с `closedate`), иначе закрытые задачи не попадут в отчёт. Это изменение поведения — вынести на согласование (настраиваемый флаг `INCLUDE_CLOSED_TASKS`).
+**Вывод:** своих GLPI-плагинов НЕ пишем — всё нестандартное покрывается активными официальными плагинами. Свой код — только интеграционный сервис и скрипты импорта.
 
-## 4. Зависимость: org sync и таблицы соответствий
+## 3. Категории (из XLSX + классификатор)
 
-Маппинг пользователей/отделов B24→GLPI (уже разработан org sync в `app/services/org_sync.py`) должен **сохранять соответствия** в БД интеграции:
+**Источник:** `bitrix24-add-report/Категории услуг дял задач тех..xlsx` — 10 категорий услуг. Классификатор — `sla/report.py:get_task_category` (ключевые слова с границами слов, регистронезависимо). В `sla/config.py` уже добавлено ещё 2 серверных = **12 категорий**:
 
-- `org_user_map`: `b24_user_id` → `glpi_user_id` (+ email)
-- `org_department_map`: `b24_dept_id` → `glpi_entity_id`
+1. Настройка ПК
+2. Доступ и восстановление доступа к 1С
+3. Доступ к сетевым ресурсам
+4. Настройка удаленного доступа (VPN)
+5. Организация настройки доступов и сертификатов в ЭДО
+6. Абонентское обслуживание рабочего места
+7. Обслуживание принтера
+8. Настройка и поддержка IP-телефонии
+9. Сопровождение платформы Битрикс 24
+10. Работы по серверам
+11. Поддержка серверного оборудования
+12. Другое
 
-Эти таблицы заполняются при каждом прогоне org sync и используются при создании тикета (requester/tech/entity). **Org sync — предпосылка Phase 1.5** (должен быть развёрнут и выполнен хотя бы один раз до включения маппинга).
+**В GLPI:** создать дерево ITIL-категорий на их основе (под «Запрос»/«Сервисный запрос» + «Инцидент»), НЕ больше 12. Классификатор перенести в интеграционный сервис (`ticket_mapper.classify_category`), маппить метку → `itilcategories_id` по конфигу. Точное дерево/привязка к типам (Инцидент/Запрос) — на согласование.
 
-## 5. SLA-отчёт в GLPI: какие данные нужны и как реализовать
+## 4. План очистки БД GLPI и чистый старт синхронизации
 
-### 5.1 Что считает b24-add-report (SLA-метрики)
+Порядок (обязательный):
 
-- **first_response** — время до первого ответа/взятия в работу
-- **resolution** — время решения (по приоритетам: SLA-пороги из конфига)
-- **stuck** — «зависшие» задачи (>N дней без изменений)
-- **comment_window** — задержка ответа на комментарий
-- **stage durations** — этапы (operator/dispatcher/head) по истории статусов
-- **category** — классификация по ключевым словам
-- **client sign / company / subdivision** — из структуры B24 + XLSX-маппинга
-- **elapsed (трудозатраты)** — фактические часы
+1. **Бэкап** текущей БД (уже есть: `/opt/backups/glpi/20260815-220522/glpi-full.sql`).
+2. **Установка плагинов** (Fields, Tag, Datainjection, Mreporting/Metabase) → `php bin/console glpi:plugin:install <name>`.
+3. **Настройка** категорий (раздел 3), типов запросов, SLA (по приоритетам, first response/resolution), шаблонов.
+4. **Очистка данных тикетов**: удалить все тикеты + связи (API purge), сохранить системных пользователей/структуру entity/категории/SLA. (Не трогать users/entities — их даёт org sync.)
+5. **Org sync**: деплой + первый прогон — заполнение таблиц соответствий `b24_user→glpi_user`, `b24_dept→glpi_entity` + создание пользователей/сущностей.
+6. **Синхронизация задач**: включить полный маппинг (Фаза A), прогон по всем задачам B24 (включая закрытые, флаг `INCLUDE_CLOSED_TASKS`) → тикеты создаются чистыми и полными.
+7. **SLA-дашборд** (Metabase) + отчёт; сверка с b24-add-report.
 
-### 5.2 Что уже есть в ядре GLPI (используем бесплатно)
+Необходимость очистки: гарантирует полноту/порядок (главный принцип — чистая база = корректный отчёт). Только тикеты и их связи удаляются; пользователи/структура — нет (их восстановит org sync).
 
-| SLA-данные | Источник в GLPI |
-|---|---|
-| first_response | `takeintoaccountdate` (взятие в работу) + первый followup техника |
-| resolution | `solvedate` − `date` |
-| Нарушение SLA | `glpi_slas` (уже есть **234 SLA**), `slas_id_ttr/tto`, `time_to_resolve` |
-| Категории | `glpi_itilcategories` (уже есть: Инцидент/Запрос + подкатегории) |
-| История статусов | `glpi_logs` (тикет-история) |
-| Комментарии | `glpi_itilfollowups` |
-| Трудозатраты тех.работ | `glpi_tickets_tasks.actiontime` (штатные задачи тикета) |
+## 5. Целевой маппинг Bitrix24 → GLPI (ядро)
 
-### 5.3 Что требует плагина (нет в ядре)
+| Bitrix24 | GLPI | Механизм |
+|---|---|---|
+| `ID` | `externalid` + `name="[Bitrix24 #{ID}] {TITLE}"` | ядро |
+| `TITLE` | `name` | ядро |
+| `DESCRIPTION` | `content` (чистый текст) | ядро |
+| `CREATED_DATE` | `date` | ядро |
+| `DEADLINE` | `time_to_resolve` | ядро |
+| `CLOSED_DATE` | `closedate`/`solvedate` | ядро |
+| `PRIORITY` (1-4) | `priority` (1→1, 2→3, 3→4, 4→5) | ядро, настраиваемо |
+| `STATUS` (1-7) | `status` (маппинг: 1→1, 2→4, 3→2, 4→4, 5→5, 6→4) | ядро, настраиваемо |
+| Категория (классификатор) | `itilcategories_id` | ядро |
+| `CREATED_BY` | requester (`glpi_tickets_users` role 1) | org_user_map |
+| `RESPONSIBLE_ID` | assignee (role 2) | org_user_map |
+| `UF_DEPARTMENT` | `entities_id` | org_department_map |
+| `GROUP_ID` | assign group | маппинг групп |
+| Комментарии B24 | followup'ы | ядро (опция) |
 
-- Признак клиента (`b24_client_sign`) — из XLSX
-- Путь отдела (компания/подразделение) `b24_department_path`
-- Исходный статус/даты B24 (`b24_status`, `b24_changed_date`)
-- Фактические трудозатраты B24 (`b24_elapsed_seconds`)
-- Специфичные метрики отчёта (stuck, comment_window, этапы) — **не пересчитываются нативно**
+## 6. Поля через плагин Fields (нестандартные данные)
 
-### 5.4 Стратегия реализации отчёта
+Поля тикета `b24_*` (плагин Fields):
+`b24_task_id`, `b24_status`, `b24_changed_date`, `b24_created_by`, `b24_duration_fact_seconds`, `b24_elapsed_seconds`, `b24_group_name`, `b24_tags`, `b24_client_sign`, `b24_department_path`. Доступны в API тикета (Fields отдаёт кастомные поля через `GET /Ticket/{id}`) → их использует Metabase/отчёт.
 
-1. **Штатный GLPI**: SLA по приоритетам (first response/resolution) настраиваются нативными SLA GLPI — тикеты получают `time_to_resolve` и SLA-уровни. Отчёты по категориям/исполнителям — штатный модуль Reports (CSV/экспорт).
-2. **Плагин `b24sla`** — дашборд/отчёт с нестандартными метриками:
-   - читает ядро (date, solvedate, status, categories) + поля плагина `b24fields`
-   - считает stuck / comment_window / этапы / трудозатраты / клиента
-   - экспорт XLSX (аналогично b24-add-report)
-   - виджеты на дашборде GLPI (dashboard widgets через hook `dashboard_cards`)
-3. **Плагин, а не правка ядра** — единственный способ не ломать обновления GLPI и переносить решение на новые версии (GLPI-плагины стабильны между мажорными версиями).
+## 7. L1-процесс: GLPI как основная сервисная программа
 
-## 6. Архитектура GLPI-плагинов
+Сейчас L1 вручную перезаполняет `DESCRIPTION` задачи B24 по шаблону:
+```
+ФИО: 
+Телефон: 
+Организация: 
+Место положение: 
+Категория: 
+Приоритет: 
+Описание проблемы: 
+```
+**Целевой поток:**
+1. Интеграция забирает «сырую» задачу B24 → создаёт/обновляет тикет GLPI с маппингом (раздел 5-6).
+2. Тикет ведётся в GLPI (основная система): назначение, статусы, followup, трудозатраты (`glpi_tickets_tasks`).
+3. **Запись обратно в B24** (`tasks.task.update.json`, `task.update`):
+   - `DESCRIPTION` = обновлённый шаблон L1 (ФИО/Телефон/Организация/Местоположение/Категория/Приоритет/Описание проблемы) — поля из тикета GLPI.
+   - `STATUS` — синхронизация статуса тикета → статус задачи B24 (обратный маппинг).
+   - Комментарий в чат задачи (followup GLPI → комментарий B24).
+   - **Учёт времени**: трудозатраты из `glpi_tickets_tasks` → `tasks.task.elapseditem.add` в B24.
+4. Идемпотентность/защита от петель: вести признак «опубликовано в B24» (поле Fields или отметка в своей БД) + сверка по `last_glpi_followup_id`/`changed_date`.
 
-### 6.1 Общие принципы
+**Архитектура записи обратно:** расширение текущего reverse-sync (уже пишет статус + описание) до полного L1-пайплайна. Плагин в B24 не нужен (webhook REST). GLPI → источник истины для сервисного процесса.
 
-- Один плагин = одна задача; поля — через **own tables** плагина + hook `item_add_item`/`post_item` для показа на форме тикета.
-- НЕ менять таблицы ядра (`glpi_tickets` и др.) — добавлять поля только в таблицы плагина.
-- Связать поля плагина с тикетом через `tickets_id` (int, FK).
-- Каждый плагин: `plugin.xml`, `hook.php`, `setup.php`, `install/mysql/`, `inc/`.
-- Версия плагина привязана к GLPI API (GLPI 10.x), миграции через `install()`/`update()`.
+## 8. Активы в GLPI (Computer/NetworkEquipment/Server и др.)
 
-### 6.2 Плагин `b24fields`
+Источники (по приоритету):
+1. **NetBox** — если доступен: выгрузка CSV → **Datainjection** в GLPI (или прямой скрипт через GLPI REST API).
+2. **docs-signal-infa** (`http://docs.ais.local`, порт 8082, сервер signal-glpi) — markdown-инвентарь по подразделениям (`network.md`, `servers.md`, `wifi.md`, `cables.md`) + CSV-выгрузки Omada/UniFi. **Скрипт парсинга markdown → GLPI API** (hostname, IP, модель, серийник, MAC, локация, роль).
+3. **Нативный инвентарь GLPI** (glpi-agent) для будущих серверов/АРМ.
 
-- Таблица `glpi_plugin_b24fields_tickets`:
-  `id`, `tickets_id` (FK), `b24_task_id`, `b24_status`, `b24_changed_date`, `b24_created_by`, `b24_duration_fact`, `b24_elapsed_seconds`, `b24_group_name`, `b24_tags`, `b24_client_sign`, `b24_department_path`
-- Hook `show_item` → выводит поля на форме тикета (read-only блок «Данные Bitrix24»)
-- API: отдаёт поля через `GET /apirest.php/Ticket/{id}?with_b24fields=1` (реализуется в плагине)
-- CRUD-доступ через `PluginB24fieldsTicket::getFromDBByTicket()`.
+Реализация: модуль `app/services/asset_import.py` + скрипты; импорт в типы GLPI (Computer, NetworkEquipment, Server, Location). Повторяемый, идемпотентный (матчинг по серийнику/имени).
 
-### 6.3 Плагин `b24sla`
+## 9. План задач (TDD, по фазам)
 
-- Расчёт нестандартных метрик из ядра + `b24fields`
-- Дашборд-виджеты (hook `dashboard_cards`) + страница отчёта (menu)
-- Экспорт XLSX (использует phpspreadsheet, штатная зависимость GLPI)
-
-## 7. План задач (TDD)
-
-### Фаза A — Расширенный маппинг в интеграционном сервисе
+### Фаза A — Расширенный маппинг + L1-запись обратно (интеграционный сервис)
 
 **Files:**
-- Modify: `app/services/poller.py` (`_process_task`, `_build_ticket_content`)
-- Create: `app/services/ticket_mapper.py` (маппинг полей, keyword-категоризация)
-- Create: `app/services/org_map.py` (чтение таблиц соответствий)
-- Modify: `app/config/settings.py` (флаги/маппинги)
-- Test: `tests/test_ticket_mapper.py`
+- Create: `app/services/ticket_mapper.py` (маппинг полей, классификатор категорий, шаблон L1, статусы)
+- Create: `app/services/org_map.py` (чтение таблиц соответствий `org_user_map`/`org_department_map`)
+- Modify: `app/models/org_map.py` (модели соответствий + миграция alembic)
+- Modify: `app/services/poller.py`, `app/services/glpi.py`, `app/services/reverse_sync.py` (L1-запись)
+- Modify: `app/config/settings.py` (флаги `INCLUDE_CLOSED_TASKS`, маппинги, Fields-настройки)
+- Test: `tests/test_ticket_mapper.py`, `tests/test_l1_writeback.py`
 
-- [ ] **A.1 Таблицы соответствий org_user_map / org_department_map в БД интеграции** (модель + миграция alembic) + заполнение в `org_sync.sync_org_structure()`.
+- [ ] **A.1 Модели соответствий** `org_user_map`/`org_department_map` + заполнение в `org_sync` (миграция alembic).
+- [ ] **A.2 `ticket_mapper`**: `map_priority`, `map_status`, `parse_dt`, `classify_category` (12 категорий), `build_ticket_fields`.
+- [ ] **A.3 `create_ticket`**: поля ядра (`date`, `time_to_resolve`, `closedate`, `priority`, `status`, `itilcategories_id`, `externalid`, requester/assignee/entity, followup'ы).
+- [ ] **A.4 Поля Fields**: запись `b24_*` в кастомные поля тикета (API Fields).
+- [ ] **A.5 L1-writeback**: обновление `DESCRIPTION` по шаблону L1, статус, комментарий, `elapseditem.add` в B24; защита от петель.
+- [ ] **A.6 Флаг `INCLUDE_CLOSED_TASKS`** + создание тикетов для закрытых задач.
+- [ ] **A.7 Тесты** (маппинг, классификация, L1, статусы, петли) — `pytest`, `ruff`, `mypy`.
 
-```python
-# app/models/org_map.py
-class OrgUserMap(Base):
-    __tablename__ = "org_user_map"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    b24_user_id: Mapped[int] = mapped_column(unique=True, index=True)
-    glpi_user_id: Mapped[int]
-    email: Mapped[str] = mapped_column(String(255), default="")
+### Фаза B — Чистый старт и настройка GLPI
 
-class OrgDepartmentMap(Base):
-    __tablename__ = "org_department_map"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    b24_dept_id: Mapped[int] = mapped_column(unique=True, index=True)
-    glpi_entity_id: Mapped[int]
-```
+- [ ] **B.1 Установка плагинов** (Fields, Tag, Datainjection, Mreporting/Metabase) + проверка совместимости с GLPI 10.x (ветки `10.0/bugfixes`).
+- [ ] **B.2 Категории**: создать 12 ITIL-категорий в GLPI (по XLSX).
+- [ ] **B.3 SLA**: настроить SLAs по приоритетам (first response/resolution).
+- [ ] **B.4 Очистка тикетов**: purge всех тикетов + связей (пользователей/entity/категории/SLA не трогаем).
+- [ ] **B.5 Org sync прогон** → соответствия + пользователи/сущности.
 
-- [ ] **A.2 `ticket_mapper.py`: чистое формирование полей тикета** из `task_data` (даты ISO→datetime, приоритет, статус, категория, requester/tech/entity через org_map).
+### Фаза C — SLA-отчёт
 
-```python
-# app/services/ticket_mapper.py
-def map_priority(b24_priority: int) -> int:
-    return {1: 1, 2: 3, 3: 4, 4: 5}.get(int(b24_priority or 2), 3)
+- [ ] **C.1 Metabase**: подключение к БД GLPI (read-only), SQL-карточки: SLA по приоритетам/категориям/подразделениям, stuck, трудозатраты, клиент.
+- [ ] **C.2 Сверка** с b24-add-report (≤5% расхождений из-за таймзон).
+- [ ] **C.3 (опция)** Behaviors — автоназначение/эскалация по SLA.
 
-def map_status(b24_status: int) -> int:
-    return {1: 1, 2: 4, 3: 2, 4: 4, 5: 5, 6: 4}.get(int(b24_status or 1), 1)
+### Фаза D — Активы
 
-def parse_dt(value) -> datetime | None: ...
-def classify_category(title, description, rules) -> str | None: ...  # keyword-классификатор
-def build_ticket_fields(task_data, org_user_map, org_dept_map, settings) -> dict: ...
-```
+- [ ] **D.1** Скрипт импорта из **docs-signal-infa** (парсинг `network.md`/`servers.md`/`wifi.md`) → GLPI API (NetworkEquipment/Computer/Location).
+- [ ] **D.2** Импорт из **NetBox** (CSV → Datainjection или прямой API).
+- [ ] **D.3** Идемпотентность (матчинг по серийнику/имени), повторяемость.
 
-- [ ] **A.3 Передача полей в GLPI**: `glpi_client.create_ticket` расширяется на `date`, `time_to_resolve`, `closedate`, `priority`, `status`, `itilcategories_id`, `externalid`, requester/tech/entity, followup'ы.
+## 10. Оценка трудозатрат
 
-```python
-# app/services/glpi.py — create_ticket(...) с новыми kwargs:
-def create_ticket(
-    self, name, content, session_token,
-    category_id=None, group_id=None, entity_id=None,
-    *, requester_id=None, assignee_id=None,
-    date=None, time_to_resolve=None, closedate=None,
-    priority=None, status=None, itilcategories_id=None,
-    externalid=None, followups=None,
-) -> dict: ...
-```
+| Работа | Оценка |
+|---|---|
+| Установка/настройка плагинов (Fields, Tag, Datainjection, Mreporting/Metabase) | 1-1.5 дня |
+| Категории + SLA + очистка БД + чистый старт | 1-1.5 дня |
+| Маппинг + L1-запись обратно (Фаза A) | 4-6 дней |
+| SLA-дашборд Metabase + сверка | 2-3 дня |
+| Активы (docs-signal-infa, NetBox) | 2-3 дня |
+| **Итого** | **~10-15 дней** |
 
-- [ ] **A.4 Перенос комментариев B24 в followup'ы** (опционально, `INCLUDE_COMMENTS=true`).
-- [ ] **A.5 Флаг `INCLUDE_CLOSED_TASKS`** — создавать тикеты для задач статусов 4-7 (с закрытием), не пропускать.
-- [ ] **A.6 Тесты**: маппинг, категоризация, даты, статусы; интеграционный мок-тест `create_ticket` с новыми полями.
-- [ ] **A.7 Commit** (по под-задачам).
+Экономия от использования готовых плагинов вместо своих: ~8-10 дней.
 
-### Фаза B — Плагин GLPI `b24fields`
-
-**Files (в /opt/glpi/plugins/b24fields/):**
-- `plugin.xml`, `b24fields.php` (setup), `hook.php`, `inc/ticket.class.php`, `install/mysql/install.sql`, `install/update_1_0_1.php`
-
-- [ ] **B.1 Каркас плагина** (`plugin.xml`, `setup.php` c `plugin_init_b24fields()`, регистрация в GLPI).
-- [ ] **B.2 Таблица плагина** (`install/mysql/install.sql`) — колонки из 6.2.
-- [ ] **B.3 Hook `show_item`** — вывод блока «Данные Bitrix24» на форме тикета.
-- [ ] **B.4 API плагина**: `GET /apirest.php/Ticket/{id}` + `b24fields` (через hook `api_get` или REST-расширение плагина).
-- [ ] **B.5 Установка плагина на сервер** (файлы в `/opt/glpi/plugins/`, `php bin/console glpi:plugin:install b24fields`), тест на тестовой сущности.
-
-### Фаза C — SLA в GLPI + отчёт
-
-- [ ] **C.1 Настройка SLA GLPI**: SLAs first-response/resolution по приоритетам; тикеты получают `slas_id_*`/`time_to_resolve` автоматически (native GLPI). Категории сопоставить с классификатором (настройка маппинга).
-- [ ] **C.2 Плагин `b24sla`**: страница отчёта (категория/подразделение/исполнитель/период), метрики first_response/resolution из ядра, stuck/comment_window/трудозатраты из `b24fields`, экспорт XLSX.
-- [ ] **C.3 Дашборд-виджеты** (`dashboard_cards`): «Нарушенные SLA», «Зависшие», «Открыто по категориям».
-- [ ] **C.4 Тесты**: расчёт метрик на тестовых тикетах; сравнение с эталоном b24-add-report.
-
-## 8. Тестирование и приёмка
-
-- Юнит-тесты интеграционного сервиса: маппинг, категоризация, даты, статусы (pytest).
-- Тест на GLPI (тестовая entity): создание тикета со всеми полями → проверка в БД/API.
-- Сверка SLA-метрик плагина с b24-add-report на одних и тех же задачах (до 5% расхождения из-за таймзон).
-- `ruff`, `mypy` — без новых ошибок; GLPI — `php -l`, консольные проверки.
-
-## 9. Риски и решения
+## 11. Риски и решения
 
 | Риск | Решение |
 |---|---|
-| Правка ядра GLPI ломает обновления | Всё нестандартное — только в плагинах (b24fields, b24sla) |
-| Таймзоны/форматы дат B24 vs GLPI | Нормализация ISO→datetime в `ticket_mapper`, единый UTC |
-| Закрытые задачи не создаются сейчас | Флаг `INCLUDE_CLOSED_TASKS` (на согласование) |
-| 3148 существующих тикетов без новых полей | Backfill-задача: разовый пере-маппинг по `externalid` (или оставить, новые тикеты — с полями) |
-| Соответствия пользователей неполные | org sync перед маппингом; fallback: requester = техник, entity = GLPI_DEFAULT_ENTITY_ID |
-| Маппинг статусов различается | Настраиваемая таблица маппингов в settings/env |
-| Трудозатраты B24 (elapsed) недоступны для лимитированного вебхука | Доп. вебхук (уже есть с правами user/department — проверить task.elapsed) |
+| Fields/Metabase несовместимы с GLPI 10 | Пинать на ветки `10.0/bugfixes`; проверка до установки |
+| Петля B24↔GLPI при записи L1 | Признак публикации (поле/флаг) + сверка по `changed_date`/`last_glpi_followup_id` |
+| Таймзоны/форматы дат | Нормализация ISO→datetime, единый UTC |
+| Статусы различаются | Настраиваемые маппинги |
+| L1-шаблон меняется | Шаблон — в конфиге/настройке, не в коде |
+| docs-signal-infa/NetBox неполные | Нативный инвентарь GLPI (glpi-agent) как дополнение |
+| Потеря данных при очистке | Полный бэкап перед очисткой (есть) |
 
-## 10. Rollout
+## 12. Rollout
 
-1. Деплой org sync + первый прогон (заполнение соответствий).
-2. Деплой интеграционного сервиса с маппингом (Фаза A) — новые тикеты создаются с полями.
-3. Установка плагинов b24fields → b24sla на GLPI.
-4. Настройка SLA и категорий.
-5. Сверка отчёта с b24-add-report; затем выключение b24-add-report.
-6. Backfill существующих тикетов (опционально).
+1. Бэкап → установка плагинов → категории/SLA.
+2. Очистка тикетов → org sync → маппинг-синхронизация (чистые тикеты).
+3. L1-writeback включить после сверки маппинга на тестовых задачах (35591/35633).
+4. Metabase-дашборд + сверка → выключение b24-add-report.
+5. Импорт активов (docs-signal-infa → NetBox → нативный инвентарь).
 
 ---
 
 ### Открытые вопросы для согласования
 
-1. `INCLUDE_CLOSED_TASKS` — создавать тикеты для закрытых задач (4-7)? (Сейчас — нет; для отчёта по закрытым нужно — да.)
-2. Переносить ли **комментарии** B24 в GLPI followup'ы при создании (объём + права)?
-3. Имя тикета: оставить префикс `[Bitrix24 #ID]` или только `TITLE` (externalid хранит ID)?
-4. Категоризация: повторять keyword-классификатор b24-add-report или перенести классификацию в плагин (пересчёт в GLPI)?
-5. Трудозатраты: использовать штатные `glpi_tickets_tasks` или поле плагина `b24_elapsed_seconds`?
+1. **Очистка**: подтверждаете полную очистку тикетов GLPI (пользователей/структуру не трогаем)?
+2. **Плагины**: согласны на Fields + Tag + Datainjection + Mreporting/Metabase вместо своих плагинов?
+3. **L1-шаблон**: утвердить текущий шаблон (ФИО/Телефон/Организация/Местоположение/Категория/Приоритет/Описание проблемы) и механизм обратной записи (описание/статус/комментарий/учёт времени)?
+4. **Закрытые задачи**: `INCLUDE_CLOSED_TASKS=true` (создавать тикеты и для закрытых задач B24)?
+5. **Категории**: дерево из 12 категорий (XLSX + серверные) — утвердить состав/родителей?
+6. **Активы**: порядок источников — NetBox → docs-signal-infa → нативный инвентарь?
