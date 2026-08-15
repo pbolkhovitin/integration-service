@@ -22,6 +22,7 @@ from app.services.bitrix import BitrixClient
 from app.services.glpi import GLPIClient
 from app.services.org_sync import sync_org_structure
 from app.services.reverse_sync import reverse_sync_test_tasks
+from app.services.test_tasks import allowed_test_task_ids
 
 logger = logging.getLogger(__name__)
 
@@ -180,10 +181,13 @@ async def _poll_for_user(
     # fetched IDs still participate in reconciliation, so older tasks are
     # not mistaken for deletions. Bitrix24 list filters do not support
     # date ranges on this portal — filtering is done client-side.
+    # Whitelisted test tasks bypass the window (always processed).
     lookback = settings.BITRIX24_SYNC_LOOKBACK_DAYS
     since_dt: datetime | None = None
+    allowed_test: set[int] = set()
     if lookback > 0:
         since_dt = datetime.now(timezone.utc) - timedelta(days=lookback)
+        allowed_test = await allowed_test_task_ids()
 
     while True:
         # Fetch page of tasks from Bitrix24 (blocking sync call in thread)
@@ -216,10 +220,13 @@ async def _poll_for_user(
             # Client-side lookback window (Bitrix24 filters don't support
             # date ranges here): skip processing old tasks, but keep them
             # in fetched_ids so reconciliation does not close their tickets.
+            # Whitelisted test tasks bypass the window.
             if since_dt is not None:
-                created = _parse_task_date(task_data.get("CREATED_DATE"))
-                if created is None or created < since_dt:
-                    continue
+                tid_int = int(task_id) if task_id.isdigit() else None
+                if tid_int is not None and tid_int not in allowed_test:
+                    created = _parse_task_date(task_data.get("CREATED_DATE"))
+                    if created is None or created < since_dt:
+                        continue
 
             result = await _process_task(
                 bitrix_client=bitrix_client,

@@ -132,6 +132,9 @@ class TestBitrixCallsRunInThread:
         monkeypatch.setattr(
             poller, "_process_task", AsyncMock(return_value="created")
         )
+        monkeypatch.setattr(
+            poller, "allowed_test_task_ids", AsyncMock(return_value=set())
+        )
 
         result = await poller._poll_for_user(bitrix, glpi, "sess", 70)
 
@@ -140,6 +143,32 @@ class TestBitrixCallsRunInThread:
         assert poller._process_task.call_count == 1
         processed_id = poller._process_task.call_args.kwargs["task_data"]["ID"]
         assert processed_id == "101"
+
+    async def test_test_task_bypasses_lookback_window(self, monkeypatch) -> None:
+        """Whitelisted test tasks are processed even if older than the window."""
+        import datetime
+
+        monkeypatch.setattr(poller.settings, "BITRIX24_SYNC_LOOKBACK_DAYS", 7)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        old = (now - datetime.timedelta(days=30)).isoformat()
+
+        bitrix = MagicMock()
+        bitrix.get_tasks.return_value = {
+            "tasks": [{"ID": "35591", "CREATED_DATE": old}],
+            "next": 0,
+        }
+        glpi = MagicMock()
+        monkeypatch.setattr(
+            poller, "_process_task", AsyncMock(return_value="created")
+        )
+        monkeypatch.setattr(
+            poller, "allowed_test_task_ids", AsyncMock(return_value={35591})
+        )
+
+        result = await poller._poll_for_user(bitrix, glpi, "sess", 70)
+
+        assert result == {"35591"}
+        assert poller._process_task.call_count == 1
 
 
 class TestRetryFailedTasks:
