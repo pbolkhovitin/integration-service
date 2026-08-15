@@ -100,7 +100,7 @@ curl http://localhost:8000/api/bitrix24/sync/status
 
 ```bash
 # Немедленный poll (без ожидания расписания)
-curl -X POST http://localhost:8000/api/bitrix24/sync/trigger
+curl -X POST -H "X-Admin-Token: $ADMIN_API_TOKEN" http://localhost:8000/api/bitrix24/sync/trigger
 # → {"status":"completed"}
 ```
 
@@ -185,6 +185,12 @@ uvicorn app.main:app --reload --port 8000
 | `BITRIX24_WEBHOOK_URL`      | Bitrix24 webhook URL (без метода)     | `https://b24.example.com/rest/445/y1uz...`      |
 | `BITRIX24_RESPONSIBLE_IDS`  | ID ответственных через запятую        | `70` или `70,71,72`                              |
 
+> **Аутентификация мутирующих эндпоинтов:** `POST /api/bitrix24/sync/trigger`,
+> `/sync/cleanup`, `/sync/retry`, `/sync/reverse-test` требуют заголовок
+> `X-Admin-Token`, равный значению `ADMIN_API_TOKEN`. Если токен не задан —
+> эндпоинты отвечают `401`. CORS-мидлвара регистрируется только при непустом
+> `CORS_ORIGINS`.
+
 ### Опциональные (MVP)
 
 | Переменная                       | По умолчанию | Описание                            |
@@ -194,6 +200,9 @@ uvicorn app.main:app --reload --port 8000
 | `POSTGRES_DB`                    | `integration` | Имя БД                           |
 | `POSTGRES_USER`                  | `integration` | Пользователь БД                  |
 | `BITRIX24_POLL_INTERVAL_SECONDS` | `60`        | Интервал опроса Bitrix24 (секунды)  |
+| `BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS` | `60` | Интервал обратной синхронизации GLPI→Bitrix24 (секунды) |
+| `CORS_ORIGINS`                | —           | Разрешённые CORS-origin через запятую (пусто = CORS отключен) |
+| `ADMIN_API_TOKEN`             | —           | Секрет для мутирующих эндпоинтов `/api/bitrix24/sync/*` (заголовок `X-Admin-Token`) |
 | `GLPI_DEFAULT_CATEGORY_ID`       | `1`         | Категория по умолчанию (Инцидент)   |
 | `GLPI_DEFAULT_GROUP_ID`          | `1`         | Группа по умолчанию (IT-поддержка L1) |
 | `GLPI_DEFAULT_ENTITY_ID`         | `2`         | Орг. единица (Департамент IT)       |
@@ -244,20 +253,25 @@ GET  /api/bitrix24/sync/status
          "responsible_ids": [70], "next_run": "2025-..."
   Статус poller'а: интервал, ID ответственных, следующий запуск.
 
-POST /api/bitrix24/sync/trigger
+POST /api/bitrix24/sync/trigger   (требует X-Admin-Token)
   → 200 {"status": "completed"}
   Ручной запуск poll-цикла (немедленно, без ожидания расписания).
 
-POST /api/bitrix24/sync/cleanup
+POST /api/bitrix24/sync/cleanup    (требует X-Admin-Token)
   → 200 {"bitrix24_tasks_fetched": 134, "db_tasks_total": 5, ...
   Детектит задачи, удалённые в Bitrix24, и закрывает (status=5 solved)
   связанные тикеты в GLPI.
+
+POST /api/bitrix24/sync/retry      (требует X-Admin-Token)
+  → 200 {"requeued": 1, "failed_total": 2}
+  Переводит failed-задачи (attempts < max_attempts) обратно в pending
+  для повторной обработки следующим poll-циклом.
 
 GET  /api/bitrix24/sync/reverse-status
   → 200 {"test_mode": true, "test_task_ids": [35591, 35633], "active": true}
   Статус reverse sync: включён ли test mode, какие ID задач отслеживаются.
 
-POST /api/bitrix24/sync/reverse-test
+POST /api/bitrix24/sync/reverse-test (требует X-Admin-Token)
   → 200 {"checked": 2, "status_updated": 1, "comments_sent": 3, ...}
   Ручной запуск обратной синхронизации (GLPI статусы → Bitrix24).
   Работает только для whitelist-задач при TEST_MODE=True.
@@ -438,11 +452,15 @@ APScheduler-based poller, работающий внутри FastAPI процес
 - **Логика:**
   1. Для каждого `responsible_id` из `BITRIX24_RESPONSIBLE_IDS`
   2. Постранично загружает задачи из Bitrix24 (50/страница)
-  3. Пропускает закрытые задачи (status 3, 5)
-  4. Проверяет идемпотентность по `source_id` в БД
+  3. Пропускает закрытые/неактивные задачи (статусы 4, 5, 6, 7;
+     1 «новое», 2 «в работе/ожидает», 3 «в работе» — обрабатываются)
+  4. Проверяет идемпотентность по `source_id` в БД (race защищён unique
+     constraint + обработкой IntegrityError)
   5. Создаёт Task запись (status=`processing`)
   6. Создаёт GLPI тикет через `GLPIClient.create_ticket()`
   7. Обновляет Task (status=`completed`, result=GLPI ticket data)
+  Зависшие задачи в `processing` (старше 2×poll-интервала) и `failed`
+  (attempts < max_attempts) автоматически ретраятся.
 - **Идемпотентность:** `idempotency_key = "b24:{task_id}"`
 - **Reconciliation:** после обработки всех задач проверяет, какие ранее
   синхронизированные задачи пропали из Bitrix24 (удалены), и закрывает
@@ -456,7 +474,9 @@ APScheduler-based poller, работающий внутри FastAPI процес
 #### Reverse Sync (`app/services/reverse_sync.py`)
 
 Обратная синхронизация — GLPI → Bitrix24. Работает **только** в test mode
-для whitelist-задач (ID из `TEST_TASK_IDS`).
+для whitelist-задач (ID из `TEST_TASK_IDS`). Запускается автоматически
+каждые `BITRIX24_REVERSE_SYNC_INTERVAL_SECONDS` (по умолч. 60s) и вручную
+через `POST /api/bitrix24/sync/reverse-test`.
 
 - **Механизм:**
   1. Читает из БД записи Task с source='bitrix24' и matching source_id
