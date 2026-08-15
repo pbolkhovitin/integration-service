@@ -143,6 +143,21 @@ async def _poll_bitrix24() -> None:
         glpi_client.close()
 
 
+def _parse_task_date(value) -> datetime | None:
+    """Parse a Bitrix24 datetime (e.g. 2026-08-14T10:00:00+03:00) to UTC."""
+    if not value:
+        return None
+    try:
+        dt = value
+        if isinstance(value, str):
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
 async def _poll_for_user(
     bitrix_client: BitrixClient,
     glpi_client: GLPIClient,
@@ -161,12 +176,14 @@ async def _poll_for_user(
     fetched_ids: set[str] = set()
 
     # Dev/test window: only tasks created within the lookback window are
-    # fetched (BITRIX24_SYNC_LOOKBACK_DAYS=0 → no filter).
-    created_after: str | None = None
+    # PROCESSED into tickets (BITRIX24_SYNC_LOOKBACK_DAYS=0 → all). All
+    # fetched IDs still participate in reconciliation, so older tasks are
+    # not mistaken for deletions. Bitrix24 list filters do not support
+    # date ranges on this portal — filtering is done client-side.
     lookback = settings.BITRIX24_SYNC_LOOKBACK_DAYS
+    since_dt: datetime | None = None
     if lookback > 0:
-        since = datetime.now(timezone.utc) - timedelta(days=lookback)
-        created_after = since.isoformat()
+        since_dt = datetime.now(timezone.utc) - timedelta(days=lookback)
 
     while True:
         # Fetch page of tasks from Bitrix24 (blocking sync call in thread)
@@ -175,7 +192,6 @@ async def _poll_for_user(
                 bitrix_client.get_tasks,
                 responsible_id=responsible_id,
                 start=start,
-                created_after=created_after,
             )
         except RuntimeError as exc:
             logger.error(
@@ -196,6 +212,14 @@ async def _poll_for_user(
             task_id = str(task_data.get("ID", ""))
             if task_id:
                 fetched_ids.add(task_id)
+
+            # Client-side lookback window (Bitrix24 filters don't support
+            # date ranges here): skip processing old tasks, but keep them
+            # in fetched_ids so reconciliation does not close their tickets.
+            if since_dt is not None:
+                created = _parse_task_date(task_data.get("CREATED_DATE"))
+                if created is None or created < since_dt:
+                    continue
 
             result = await _process_task(
                 bitrix_client=bitrix_client,

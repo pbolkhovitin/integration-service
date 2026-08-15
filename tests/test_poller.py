@@ -10,7 +10,7 @@ Covers:
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -105,26 +105,41 @@ class TestBitrixCallsRunInThread:
         result = await poller._poll_for_user(bitrix, glpi, "sess", 70)
 
         assert result == set()
-        bitrix.get_tasks.assert_called_once_with(
-            responsible_id=70, start=0, created_after=None
-        )
+        bitrix.get_tasks.assert_called_once_with(responsible_id=70, start=0)
         assert any(c is bitrix.get_tasks for c in calls), (
             "get_tasks must run inside asyncio.to_thread"
         )
 
-    async def test_get_tasks_uses_lookback_window(self, monkeypatch) -> None:
-        """With a lookback window, get_tasks receives created_after filter."""
+    async def test_lookback_window_filters_old_tasks(self, monkeypatch) -> None:
+        """With a lookback window, old tasks are skipped but still counted
+        in fetched_ids (reconciliation stays correct)."""
+        import datetime
+
         monkeypatch.setattr(poller.settings, "BITRIX24_SYNC_LOOKBACK_DAYS", 7)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        old = (now - datetime.timedelta(days=30)).isoformat()
+        new = (now - datetime.timedelta(days=1)).isoformat()
 
         bitrix = MagicMock()
-        bitrix.get_tasks.return_value = {"tasks": [], "next": 0}
+        bitrix.get_tasks.return_value = {
+            "tasks": [
+                {"ID": "100", "CREATED_DATE": old},
+                {"ID": "101", "CREATED_DATE": new},
+            ],
+            "next": 0,
+        }
         glpi = MagicMock()
+        monkeypatch.setattr(
+            poller, "_process_task", AsyncMock(return_value="created")
+        )
 
-        await poller._poll_for_user(bitrix, glpi, "sess", 70)
+        result = await poller._poll_for_user(bitrix, glpi, "sess", 70)
 
-        called = bitrix.get_tasks.call_args
-        assert called.kwargs["created_after"] is not None
-        assert called.kwargs["created_after"].startswith("2026-08-")
+        # Old task skipped from processing, but both are in fetched_ids.
+        assert result == {"100", "101"}
+        assert poller._process_task.call_count == 1
+        processed_id = poller._process_task.call_args.kwargs["task_data"]["ID"]
+        assert processed_id == "101"
 
 
 class TestRetryFailedTasks:
