@@ -145,6 +145,24 @@
 
 > **NetBox API:** `https://netbox.signal.lc/api/` (Token-авторизация). Токен НЕ хранить в репозитории — в `.env` (`NETBOX_URL`, `NETBOX_TOKEN`).
 
+**Сущности GLPI, которых нет в NetBox (варианты источника):** в GLPI сейчас 204 компьютера + 30 сетевых + 21 локация (в NetBox — 7 устройств). Варианты, как их получить в NetBox (источник истины):
+1. **Экспорт GLPI → NetBox**: скрипт читает `glpi_computers`/`glpi_networkequipments` (имя, серийник, модель, локация) → создаёт devices в NetBox API (дедуп по серийнику). Сохраняет данные, NetBox становится истиной.
+2. **docs-signal-infa** (обследования: `network.md`/`servers.md`/`wifi.md`) — данные по подразделениям → в NetBox (скрипт парсинга markdown).
+3. **Zabbix** — хосты + inventory (`host.get` + `selectInventory`) → NetBox (через `netbox-zabbix-sync` или свой скрипт).
+4. **Нативный инвентарь GLPI** (glpi-agent, 4 динамических) — выгрузка → NetBox.
+5. **Вручную** — для остатков.
+
+**Zabbix (`https://zbx.signal.lc`, токен работает):** официальная интеграция — **webhook media type Zabbix→GLPI** (создание тикетов из проблем, severity→urgency, закрытие тикета при recovery; Zabbix 7.0+, GLPI 10.0.18+, REST v1/v2). Активы Zabbix→GLPI она НЕ умеет. Схема с учётом NetBox:
+- **NetBox → Zabbix**: `netbox-zabbix-sync` (активный проект, 230★) — создаёт/обновляет хосты Zabbix из устройств NetBox (host groups по site/role/tenant, inventory, теги, макросы). Zabbix-инвентарь становится производным от NetBox.
+- **Zabbix → GLPI**: официальный media type — только тикеты (проблемы). Конфигурация, без своего кода.
+- **NetBox → GLPI**: Datainjection (CSV) или свой скрипт — активы.
+- Обратная связь GLPI→Zabbix — не нужна.
+
+## 8a. Механизм тестовых задач + окно синхронизации (dev)
+
+- **Тестовые задачи (whitelist записи)**: таблица `bitrix_test_tasks` + API `GET/POST/DELETE /api/bitrix24/sync/test-tasks` (POST/DELETE — под `X-Admin-Token`). Разрешённые = env `TEST_TASK_IDS` + runtime-таблица. Новый ID добавляется сразу после создания задачи в B24 — без передеплоя.
+- **Окно загрузки (dev)**: `BITRIX24_SYNC_LOOKBACK_DAYS=7` — поллер грузит задачи за последние 7 дней (`filter[CREATED_DATE]`). `INCLUDE_CLOSED_TASKS=true` — создаёт тикеты и для закрытых задач (4-7). В проде — по отдельному указанию: очистка + полная загрузка (`LOOKBACK_DAYS=0`).
+
 ## 9. План задач (TDD, по фазам)
 
 ### Фаза A — Расширенный маппинг + L1-запись обратно (интеграционный сервис)
@@ -158,7 +176,9 @@
 - Test: `tests/test_ticket_mapper.py`, `tests/test_l1_writeback.py`
 
 - [ ] **A.1 Модели соответствий** `org_user_map`/`org_department_map` + заполнение в `org_sync` (миграция alembic).
-- [ ] **A.2 `ticket_mapper`**: `map_priority`, `map_status`, `parse_dt`, `classify_category` (12 категорий), `build_ticket_fields`.
+- [ ] **A.1b Тестовые задачи**: таблица `bitrix_test_tasks` + `app/services/test_tasks.py` + API `GET/POST/DELETE /sync/test-tasks` ✅ (реализовано).
+- [ ] **A.2 `ticket_mapper`**: `map_priority`, `map_status`, `parse_dt`, `classify_category` (12 категорий), `build_l1_template` ✅ (реализовано, `tests/test_ticket_mapper.py`).
+- [ ] **A.2b Окно загрузки**: `BITRIX24_SYNC_LOOKBACK_DAYS` (7 дней в dev) + `INCLUDE_CLOSED_TASKS` ✅ (реализовано, `tests/test_poller.py`).
 - [ ] **A.3 `create_ticket`**: поля ядра (`date`, `time_to_resolve`, `closedate`, `priority`, `status`, `itilcategories_id`, `externalid`, requester/assignee/entity, followup'ы).
 - [ ] **A.4 Поля Fields**: запись `b24_*` в кастомные поля тикета (API Fields).
 - [ ] **A.5 L1-writeback**: обновление `DESCRIPTION` по шаблону L1, статус, комментарий, `elapseditem.add` в B24; защита от петель. **Запись только в whitelist-задачи (35591/35633)**, остальные — read-only (жёсткая проверка в коде).
@@ -235,7 +255,10 @@
 
 ### Остался вопрос
 
-4. **`INCLUDE_CLOSED_TASKS`** — создавать ли тикеты GLPI для уже закрытых задач B24 (статусы 4-7)?
-   - `true` — полная база для SLA-отчёта (включая историю закрытых); тикеты создаются сразу закрытыми.
-   - `false` — только активные задачи (текущее поведение); закрытые в GLPI не появятся.
-   - **Рекомендация: `true`** для полноты данных на чистом старте.
+4. ✅ **`INCLUDE_CLOSED_TASKS`** — **использовать все задачи**; в dev/test режиме грузить только за последние дни (`BITRIX24_SYNC_LOOKBACK_DAYS=7`) для уменьшения объёма. После отладки и перехода в прод — **по отдельному указанию**: очистка + полная загрузка.
+
+### Дополнительные решения (этап разработки/проверки)
+
+- **Проверка всего с минимальным объёмом:** 7 дней задач из Bitrix24 + whitelist-тестовые задачи (35591/35633 + добавленные через API) — разработать и проверить весь запланированный поток.
+- **Zabbix** — официальный media type (Zabbix→GLPI тикеты) + `netbox-zabbix-sync` (NetBox→Zabbix). Схема зафиксирована в разделе 8.
+- **Сущности GLPI вне NetBox** — варианты получения в разделе 8 (экспорт GLPI→NetBox, docs-signal-infa, Zabbix, нативный инвентарь, вручную).

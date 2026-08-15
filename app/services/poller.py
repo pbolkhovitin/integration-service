@@ -9,7 +9,7 @@ closes corresponding GLPI tickets (status=5 solved).
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
@@ -160,6 +160,14 @@ async def _poll_for_user(
     total_skipped = 0
     fetched_ids: set[str] = set()
 
+    # Dev/test window: only tasks created within the lookback window are
+    # fetched (BITRIX24_SYNC_LOOKBACK_DAYS=0 → no filter).
+    created_after: str | None = None
+    lookback = settings.BITRIX24_SYNC_LOOKBACK_DAYS
+    if lookback > 0:
+        since = datetime.now(timezone.utc) - timedelta(days=lookback)
+        created_after = since.isoformat()
+
     while True:
         # Fetch page of tasks from Bitrix24 (blocking sync call in thread)
         try:
@@ -167,6 +175,7 @@ async def _poll_for_user(
                 bitrix_client.get_tasks,
                 responsible_id=responsible_id,
                 start=start,
+                created_after=created_after,
             )
         except RuntimeError as exc:
             logger.error(
@@ -237,7 +246,8 @@ async def _process_task(
         return "skipped"
 
     # Skip closed/inactive tasks (4=awaiting control, 5=completed, 6/7=deferred)
-    if _is_skipped_bitrix_status(status):
+    # unless INCLUDE_CLOSED_TASKS is enabled (dev/full-sync mode).
+    if _is_skipped_bitrix_status(status) and not settings.INCLUDE_CLOSED_TASKS:
         logger.debug("Skipping inactive task %s (status=%s)", task_id, status)
         return "skipped"
 

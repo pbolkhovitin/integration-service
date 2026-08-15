@@ -13,6 +13,7 @@ from app.core.database import async_session_factory
 from app.models.task import Task
 from app.services.bitrix import BitrixClient
 from app.services.glpi import GLPIClient
+from app.services.test_tasks import allowed_test_task_ids
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +150,8 @@ async def _sync_one_task(
 ) -> None:
     """Process a single test task for reverse sync."""
     # Whitelist guard: never write to Bitrix24 for a non-test task.
-    if not _is_whitelisted_task(task_id):
+    # Checks env TEST_TASK_IDS + runtime bitrix_test_tasks table.
+    if task_id not in await allowed_test_task_ids():
         logger.warning(
             "Reverse sync: task %s is NOT in TEST_TASK_IDS whitelist — "
             "refusing to write to Bitrix24",

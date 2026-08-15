@@ -19,6 +19,11 @@ from app.services.reverse_sync import (
     get_reverse_sync_status,
     reverse_sync_test_tasks,
 )
+from app.services.test_tasks import (
+    add_test_task,
+    list_test_tasks,
+    remove_test_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +115,37 @@ async def reverse_sync_trigger() -> dict:
 async def org_sync_status() -> dict:
     """Get org sync (users/departments) configuration status."""
     return get_org_sync_status()
+
+
+@router.get("/sync/test-tasks")
+async def test_tasks_list() -> dict:
+    """List the writable Bitrix24 task whitelist (env + runtime)."""
+    return await list_test_tasks()
+
+
+@router.post(
+    "/sync/test-tasks",
+    dependencies=[Depends(require_admin_token)],
+)
+async def test_tasks_add(payload: dict) -> dict:
+    """Add a Bitrix24 task ID to the writable whitelist.
+
+    Use right after creating a new test task in Bitrix24 — it then becomes
+    writable (L1 write-back / reverse sync) during development.
+    """
+    task_id = int(payload.get("task_id", 0))
+    if task_id <= 0:
+        raise HTTPException(status_code=422, detail="task_id required")
+    return await add_test_task(task_id)
+
+
+@router.delete(
+    "/sync/test-tasks/{task_id}",
+    dependencies=[Depends(require_admin_token)],
+)
+async def test_tasks_remove(task_id: int) -> dict:
+    """Remove a Bitrix24 task ID from the runtime writable whitelist."""
+    return await remove_test_task(task_id)
 
 
 @router.post(

@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     TEST_MODE: bool = True
     TEST_TASK_IDS: str = "35591,35633"  # comma-separated test task IDs
 
+    # Task sync window / coverage (dev-test vs prod).
+    # INCLUDE_CLOSED_TASKS: also create GLPI tickets for closed Bitrix24
+    # tasks (statuses 4-7). In dev-test we load recent tasks only
+    # (BITRIX24_SYNC_LOOKBACK_DAYS); in prod set 0 = all.
+    INCLUDE_CLOSED_TASKS: bool = True
+    BITRIX24_SYNC_LOOKBACK_DAYS: int = 7  # 0 = no date filter (all tasks)
+
     # GLPI defaults for ticket creation
     GLPI_DEFAULT_CATEGORY_ID: int = 1  # Инцидент
     GLPI_DEFAULT_GROUP_ID: int = 1  # IT-поддержка L1

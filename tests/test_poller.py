@@ -90,6 +90,8 @@ class TestBitrixCallsRunInThread:
         calls: list = []
         real_to_thread = asyncio.to_thread
 
+        monkeypatch.setattr(poller.settings, "BITRIX24_SYNC_LOOKBACK_DAYS", 0)
+
         async def fake_to_thread(fn, *args, **kwargs):
             calls.append(fn)
             return await real_to_thread(fn, *args, **kwargs)
@@ -103,10 +105,26 @@ class TestBitrixCallsRunInThread:
         result = await poller._poll_for_user(bitrix, glpi, "sess", 70)
 
         assert result == set()
-        bitrix.get_tasks.assert_called_once_with(responsible_id=70, start=0)
+        bitrix.get_tasks.assert_called_once_with(
+            responsible_id=70, start=0, created_after=None
+        )
         assert any(c is bitrix.get_tasks for c in calls), (
             "get_tasks must run inside asyncio.to_thread"
         )
+
+    async def test_get_tasks_uses_lookback_window(self, monkeypatch) -> None:
+        """With a lookback window, get_tasks receives created_after filter."""
+        monkeypatch.setattr(poller.settings, "BITRIX24_SYNC_LOOKBACK_DAYS", 7)
+
+        bitrix = MagicMock()
+        bitrix.get_tasks.return_value = {"tasks": [], "next": 0}
+        glpi = MagicMock()
+
+        await poller._poll_for_user(bitrix, glpi, "sess", 70)
+
+        called = bitrix.get_tasks.call_args
+        assert called.kwargs["created_after"] is not None
+        assert called.kwargs["created_after"].startswith("2026-08-")
 
 
 class TestRetryFailedTasks:

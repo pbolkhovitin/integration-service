@@ -74,6 +74,7 @@ class BitrixClient:
         responsible_id: int,
         start: int = 0,
         order: str | None = None,
+        created_after: str | None = None,
     ) -> dict[str, Any]:
         """Get list of tasks from Bitrix24 with pagination.
 
@@ -88,6 +89,8 @@ class BitrixClient:
             responsible_id: Bitrix24 user ID to filter tasks.
             start: Pagination offset (0, 50, 100, ...).
             order: Sort order (e.g. ``"CREATED_DATE"``).
+            created_after: ISO datetime; only tasks created after this
+                are returned (e.g. last-N-days window in dev/test).
 
         Returns:
             Dict with ``tasks`` list and ``next`` offset for pagination.
@@ -98,6 +101,8 @@ class BitrixClient:
         }
         if order:
             params["order"] = order
+        if created_after:
+            params["filter[CREATED_DATE]"] = f">{created_after}"
 
         result = self._call("tasks.task.list.json", params=params)
 

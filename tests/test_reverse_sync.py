@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -930,6 +930,15 @@ class TestSyncOneTaskFollowupAppend:
         ):
             yield
 
+    @pytest.fixture(autouse=True)
+    def _patch_whitelist(self):
+        """The task under test is writable (whitelisted)."""
+        with patch(
+            "app.services.reverse_sync.allowed_test_task_ids",
+            new=AsyncMock(return_value={self.TASK_ID}),
+        ):
+            yield
+
     # ------------------------------------------------------------------
     # _run  —  shared test driver
     # ------------------------------------------------------------------
@@ -1309,17 +1318,9 @@ class TestWhitelistGuard:
             "skipped_not_whitelisted": 0,
         }
 
-        with (
-            patch(
-                "app.services.reverse_sync.settings.TEST_TASK_IDS",
-                "35591,35633",
-            ),
-            patch(
-                "app.services.reverse_sync.async_session_factory",
-                side_effect=AssertionError(
-                    "must not open a DB session for non-whitelisted task"
-                ),
-            ),
+        with patch(
+            "app.services.reverse_sync.allowed_test_task_ids",
+            new=AsyncMock(return_value={35591, 35633}),
         ):
             await _sync_one_task(
                 bitrix_client=bitrix,
