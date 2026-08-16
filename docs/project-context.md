@@ -41,6 +41,14 @@ GLPI 11.0.8 (Docker), NetBox 4.5.7, Zabbix, MariaDB, Redis.
 - Developer API: https://glpi-developer-documentation.readthedocs.io/en/master/devapi/index.html
 - Разработка плагинов: https://glpi-developer-documentation.readthedocs.io/en/master/plugins/index.html
 
+## MCP-инструменты (потенциальные)
+- **mcp-glpi** (github.com/GMS64260/mcp-glpi, v3, MIT, npm `mcp-glpi`) — MCP-сервер GLPI:
+  тикеты (CRUD/timeline/search/overdue-SLA), Problems/Changes, активы, статистика
+  (`glpi_tickets_stats_by`), users/groups/entities, knowledge base. Конфиг:
+  `GLPI_URL`+`GLPI_APP_TOKEN`/`GLPI_USER_TOKEN`. Совместим с GLPI 11.0.8.
+  **Статус: зафиксирован** (не подключён). Идеи применения: отладка/верификация интеграции
+  из агента, AI Service Desk, дополнение к SLA-отчёту.
+
 ## Текущий статус (2026-08-16)
 - **Phase A реализована, в отладке/тестировании.** Маппинг тикета, org sync, L1-writeback
   работают end-to-end на сервере (проверено на тест-задачах 35591/35633 + 755 задач с 01.05).
