@@ -283,6 +283,7 @@ async def _poll_for_user(
                 glpi_client=glpi_client,
                 glpi_session=glpi_session,
                 task_data=task_data,
+                allowed_test=allowed_test,
             )
             if result == "created":
                 total_processed += 1
@@ -310,6 +311,7 @@ async def _process_task(
     glpi_client: GLPIClient,
     glpi_session: str,
     task_data: dict,
+    allowed_test: set[int] | None = None,
 ) -> str:
     """Process a single Bitrix24 task.
 
@@ -386,6 +388,17 @@ async def _process_task(
         glpi_client, glpi_session, category_name
     )
 
+    # Test tasks (whitelisted) may only involve allowed test users as actors.
+    tid_int = int(task_id) if task_id.isdigit() else None
+    if allowed_test and tid_int is not None and tid_int in allowed_test:
+        allowed = settings.test_task_user_ids
+        b24_requester = int(task_data.get("CREATED_BY") or 0)
+        b24_assignee = int(task_data.get("RESPONSIBLE_ID") or 0)
+        if allowed and b24_requester not in allowed:
+            requester_id = None
+        if allowed and b24_assignee not in allowed:
+            assignee_id = None
+
     # Create Task record first (for idempotency)
     try:
         async with async_session_factory() as db:
@@ -445,11 +458,26 @@ async def _process_task(
                     glpi_session,
                 )
             # Observers (AUDITORS) → GLPI Ticket_User type=3.
+            test_filter = (
+                settings.test_task_user_ids
+                if (
+                    allowed_test
+                    and tid_int is not None
+                    and tid_int in allowed_test
+                )
+                else None
+            )
             for auditor in (task_data.get("AUDITORS") or []):
                 try:
-                    observer_id = user_map.get(
-                        int(auditor), {}
-                    ).get("glpi_user_id")
+                    auditor_int = int(auditor)
+                    if (
+                        test_filter is not None
+                        and auditor_int not in test_filter
+                    ):
+                        continue
+                    observer_id = user_map.get(auditor_int, {}).get(
+                        "glpi_user_id"
+                    )
                 except (ValueError, TypeError):
                     observer_id = None
                 if observer_id:

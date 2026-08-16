@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     # Tasks whose title contains this keyword are automatically added to the
     # writable test-tasks whitelist during polling. Empty = disabled.
     BITRIX24_AUTO_WHITELIST_KEYWORD: str = "test_glpi"
+    # Allowed Bitrix24 users for TEST tasks (whitelisted). Only these users
+    # may appear as ticket actors (requester/assignee/observers) on test
+    # tasks. Other users are filtered out.
+    BITRIX24_TEST_TASK_USER_IDS: str = "70,445,545,577"
 
     model_config = {
         "env_file": ".env",
@@ -100,6 +104,15 @@ class Settings(BaseSettings):
         if not self.TEST_TASK_IDS:
             return []
         return [int(x.strip()) for x in self.TEST_TASK_IDS.split(",") if x.strip()]
+
+    @property
+    def test_task_user_ids(self) -> set[int]:
+        """Allowed Bitrix24 user IDs for test tasks (actors filter)."""
+        return {
+            int(x.strip())
+            for x in self.BITRIX24_TEST_TASK_USER_IDS.split(",")
+            if x.strip()
+        }
 
     @property
     def cors_origins(self) -> list[str]:
