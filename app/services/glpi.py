@@ -543,6 +543,32 @@ class GLPIClient:
                     )
         return out
 
+    def get_ticket_requesters(
+        self, ticket_id: int, session_token: str
+    ) -> list[int]:
+        """Return the requester user IDs (type=1) of a ticket.
+
+        GLPI 11 stores requesters in ``glpi_tickets_users``; the
+        ``users_id_recipient`` column reflects the session user and is not
+        reliable after creation.
+        """
+        result = self._call(
+            method="GET",
+            url=(
+                f"{self._base_url}/apirest.php/Ticket/{ticket_id}"
+                "/Ticket_User"
+            ),
+            session_token=session_token,
+        )
+        out: list[int] = []
+        if isinstance(result, list):
+            for rel in result:
+                if isinstance(rel, dict) and rel.get("type") == 1:
+                    uid = rel.get("users_id")
+                    if uid is not None:
+                        out.append(int(uid))
+        return out
+
     def add_ticket_user(
         self,
         ticket_id: int,

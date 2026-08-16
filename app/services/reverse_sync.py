@@ -47,7 +47,19 @@ def _build_l1_template_from_ticket(
     """
     from app.services.ticket_mapper import build_l1_template
 
-    requester_id = ticket_info.get("users_id_recipient")
+    requester_id = None
+    try:
+        requesters = glpi_client.get_ticket_requesters(
+            int(ticket_info.get("id") or 0), glpi_session
+        )
+        if requesters:
+            requester_id = requesters[0]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("L1: failed to load requesters: %s", exc)
+    if requester_id is None:
+        raw = ticket_info.get("users_id_recipient")
+        requester_id = int(raw) if raw else None
+
     fio = ""
     phone = ""
     if requester_id:
