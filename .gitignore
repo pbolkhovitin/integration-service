@@ -61,3 +61,4 @@ config/employee_mapping.json
 .opencode/
 .pytest_cache/
 output_1_*
+glpi.csv
