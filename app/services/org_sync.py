@@ -175,6 +175,21 @@ async def sync_org_structure() -> dict:
         root_entity_id = settings.ORG_SYNC_ROOT_ENTITY_ID
         seen_depts: set[int] = set()
 
+        def _refresh_session() -> None:
+            """Re-init the GLPI session to refresh the rights cache.
+
+            GLPI caches per-session rights; entities created during the
+            session are not visible in the cache, so creating deeper
+            children fails with 'no rights' until the session is restarted.
+            """
+            nonlocal glpi_session
+            if glpi_session:
+                try:
+                    asyncio.to_thread(glpi_client.kill_session, glpi_session)
+                except Exception:  # noqa: BLE001
+                    pass
+            glpi_session = asyncio.to_thread(glpi_client.init_session)
+
         # --- Mirror department tree, matching by org_department_map ---
         for dept in _sort_departments(departments):
             seen_depts.add(dept["id"])
@@ -198,20 +213,37 @@ async def sync_org_structure() -> dict:
                             parent_entity_id,
                             glpi_session,
                         )
-                        entity_id = int(created.get("id", 0))
-                        if entity_id:
-                            entities.append(
-                                {
-                                    "id": entity_id,
-                                    "name": dept["name"],
-                                    "parent_id": parent_entity_id,
-                                }
-                            )
-                            summary["departments_created"] += 1
                     except (RuntimeError, ValueError, TypeError) as exc:
-                        logger.error("Failed to create entity %s: %s", dept, exc)
-                        summary["errors"].append(str(exc))
-                        continue
+                        # Likely a rights-cache miss — refresh session, retry once.
+                        if "нет прав" in str(exc) or "ERROR_GLPI_ADD" in str(exc):
+                            _refresh_session()
+                            try:
+                                created = await asyncio.to_thread(
+                                    glpi_client.create_entity,
+                                    dept["name"],
+                                    parent_entity_id,
+                                    glpi_session,
+                                )
+                            except (RuntimeError, ValueError, TypeError) as exc2:
+                                logger.error(
+                                    "Failed to create entity %s: %s", dept, exc2
+                                )
+                                summary["errors"].append(str(exc2))
+                                continue
+                        else:
+                            logger.error("Failed to create entity %s: %s", dept, exc)
+                            summary["errors"].append(str(exc))
+                            continue
+                    entity_id = int(created.get("id", 0))
+                    if entity_id:
+                        entities.append(
+                            {
+                                "id": entity_id,
+                                "name": dept["name"],
+                                "parent_id": parent_entity_id,
+                            }
+                        )
+                        summary["departments_created"] += 1
 
             if entity_id:
                 # Update name/parent if changed (rename / re-parent).
