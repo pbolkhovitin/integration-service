@@ -47,8 +47,14 @@ GLPI 11.0.8 (Docker), NetBox 4.5.7, Zabbix, MariaDB, Redis.
 - `GET /health`, `GET /api/bitrix24/sync/status`
 - `POST /sync/trigger` — поллер; `POST /sync/cleanup` — orphan; `POST /sync/retry`
 - `POST /sync/org` — **обновление орг.структуры** (идемпотентно)
-- `POST /sync/reverse-test` — L1-writeback (только whitelist 35591/35633)
+- `POST /sync/reverse-test` — L1-writeback (обрабатывает **полный whitelist**: env + runtime)
 - `GET/POST/DELETE /sync/test-tasks` — whitelist тест-задач
+
+## Тестовые задачи (whitelist записи)
+- База: env `TEST_TASK_IDS` (35591, 35633) + runtime `bitrix_test_tasks`.
+- **Автодобавление**: задачи с ключевым словом `Test_GLPI` в title автоматически
+  добавляются в whitelist при поллинге (`BITRIX24_AUTO_WHITELIST_KEYWORD`, пусто = off).
+- Reverse sync обрабатывает весь whitelist (env + runtime).
 
 ## Настройки (.env, key)
 `BITRIX24_WEBHOOK_URL`, `BITRIX24_ORG_WEBHOOK_URL` (права user+department),
