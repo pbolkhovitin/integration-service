@@ -507,7 +507,7 @@ class GLPIClient:
         if isinstance(result, list):
             for task in result:
                 at = task.get("actiontime") if isinstance(task, dict) else None
-                if isinstance(at, (int, float)):
+                if at is not None and isinstance(at, (int, float)):
                     total += int(at)
         return total
 
@@ -520,6 +520,28 @@ class GLPIClient:
             url=f"{self._base_url}/apirest.php/ITILCategory/{category_id}",
             session_token=session_token,
         )
+
+    def get_categories(self, session_token: str) -> list[dict[str, Any]]:
+        """Return the list of GLPI ITIL categories (id + name)."""
+        result = self._call(
+            method="GET",
+            url=f"{self._base_url}/apirest.php/ITILCategory",
+            session_token=session_token,
+        )
+        if not isinstance(result, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for c in result:
+            if isinstance(c, dict):
+                cid = c.get("id")
+                if cid is not None:
+                    out.append(
+                        {
+                            "id": int(cid),
+                            "name": str(c.get("name", "")),
+                        }
+                    )
+        return out
 
     # ------------------------------------------------------------------
     # Internal helpers

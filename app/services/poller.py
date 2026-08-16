@@ -20,9 +20,15 @@ from app.core.database import async_session_factory
 from app.models.task import Task
 from app.services.bitrix import BitrixClient
 from app.services.glpi import GLPIClient
-from app.services.org_sync import sync_org_structure
+from app.services.org_sync import load_user_map, sync_org_structure
 from app.services.reverse_sync import reverse_sync_test_tasks
 from app.services.test_tasks import allowed_test_task_ids
+from app.services.ticket_mapper import (
+    classify_category,
+    map_priority,
+    map_status,
+    parse_dt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +163,32 @@ def _parse_task_date(value) -> datetime | None:
         return dt.astimezone(timezone.utc)
     except (ValueError, TypeError):
         return None
+
+
+_category_cache: dict[str, int] | None = None
+
+
+async def _resolve_category_id(
+    glpi_client: GLPIClient, glpi_session: str, category_name: str
+) -> int | None:
+    """Resolve a service-category NAME to a GLPI itilcategories_id (cached)."""
+    global _category_cache
+    if _category_cache is None:
+        try:
+            cats = await asyncio.to_thread(
+                glpi_client.get_categories, glpi_session
+            )
+            _category_cache = {
+                _norm_name(c["name"]): c["id"] for c in cats if c.get("name")
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to load GLPI categories: %s", exc)
+            _category_cache = {}
+    return _category_cache.get(_norm_name(category_name))
+
+
+def _norm_name(name: str) -> str:
+    return " ".join(name.strip().split()).lower()
 
 
 async def _poll_for_user(
@@ -313,6 +345,19 @@ async def _process_task(
 
     content = _build_ticket_content(task_data)
 
+    # --- Phase A: mapped ticket fields ---
+    user_map = await load_user_map()
+    requester_id = user_map.get(
+        int(task_data.get("CREATED_BY") or 0), {}
+    ).get("glpi_user_id")
+    assignee_id = user_map.get(
+        int(task_data.get("RESPONSIBLE_ID") or 0), {}
+    ).get("glpi_user_id")
+    category_name = classify_category(title, description)
+    category_id = await _resolve_category_id(
+        glpi_client, glpi_session, category_name
+    )
+
     # Create Task record first (for idempotency)
     try:
         async with async_session_factory() as db:
@@ -338,9 +383,18 @@ async def _process_task(
             name=f"[Bitrix24 #{task_id}] {title}",
             content=content,
             session_token=glpi_session,
-            category_id=settings.GLPI_DEFAULT_CATEGORY_ID,
+            category_id=category_id or settings.GLPI_DEFAULT_CATEGORY_ID,
             group_id=settings.GLPI_DEFAULT_GROUP_ID,
             entity_id=settings.GLPI_DEFAULT_ENTITY_ID,
+            requester_id=requester_id,
+            assignee_id=assignee_id,
+            date=parse_dt(task_data.get("CREATED_DATE")),
+            time_to_resolve=parse_dt(task_data.get("DEADLINE")),
+            closedate=parse_dt(task_data.get("CLOSED_DATE")),
+            priority=map_priority(task_data.get("PRIORITY")),
+            status=map_status(task_data.get("STATUS")),
+            itilcategories_id=category_id,
+            externalid=task_id,
         )
     except Exception as exc:
         logger.error("Failed to create GLPI ticket for task %s: %s", task_id, exc)
