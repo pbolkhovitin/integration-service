@@ -345,16 +345,22 @@ async def _process_task(
         existing = result.scalar_one_or_none()
         if existing is not None:
             if not _should_retry_task(existing):
-                # Mirror any new Bitrix24 chat comments into GLPI followups.
-                try:
-                    await mirror_task_comments(
-                        existing, bitrix_client, glpi_client, glpi_session
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Failed to mirror B24 comments for task %s: %s",
-                        task_id, exc,
-                    )
+                # Mirror any new Bitrix24 chat messages into GLPI followups
+                # (only for whitelisted test tasks in the current phase).
+                if (
+                    allowed_test
+                    and tid_int is not None
+                    and tid_int in allowed_test
+                ):
+                    try:
+                        await mirror_task_comments(
+                            existing, bitrix_client, glpi_client, glpi_session
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Failed to mirror B24 comments for task %s: %s",
+                            task_id, exc,
+                        )
                 return "skipped"
             # Retry failed/stale task: bump attempts and reset state.
             existing.attempts += 1
@@ -518,15 +524,17 @@ async def _process_task(
             task.result = ticket
             await db.commit()
 
-    # Mirror Bitrix24 task chat comments into GLPI followups (B24 → GLPI).
-    try:
-        await mirror_task_comments(
-            task, bitrix_client, glpi_client, glpi_session
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Failed to mirror B24 comments for task %s: %s", task_id, exc
-        )
+    # Mirror Bitrix24 task chat messages into GLPI followups (B24 → GLPI),
+    # only for whitelisted test tasks in the current phase.
+    if allowed_test and tid_int is not None and tid_int in allowed_test:
+        try:
+            await mirror_task_comments(
+                task, bitrix_client, glpi_client, glpi_session
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Failed to mirror B24 comments for task %s: %s", task_id, exc
+            )
 
     logger.info(
         "Created GLPI ticket %s for Bitrix24 task %s: %s",
