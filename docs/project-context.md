@@ -26,8 +26,20 @@ GLPI 11.0.8 (Docker), NetBox 4.5.7, Zabbix, MariaDB, Redis.
 - `docs/netbox-naming-conventions.md` — нейминг NetBox (для утверждения)
 - `app/services/ticket_mapper.py` — маппинг/классификатор/L1-шаблон
 - `app/services/org_sync.py` — орг-структура/пользователи по ID
-- `app/services/reverse_sync.py` — L1-writeback/статусы/время
+- `app/services/reverse_sync.py` — L1-writeback/статусы/время/чат
+- `app/services/comment_mirror.py` — зеркалирование чата B24→GLPI
 - `app/services/poller.py` — поллер/маппинг тикетов
+
+## Справочники API (официальные)
+**Bitrix24:**
+- MCP/инструменты: https://apidocs.bitrix24.ru/ai-tools/mcp.html
+- API Reference: https://apidocs.bitrix24.ru/api-reference/index.html
+
+**GLPI:**
+- Общая документация API: https://help.glpi-project.org/documentation/modules/configuration/general/api/api
+- REST API v2: https://help.glpi-project.org/documentation/modules/configuration/general/api/restful-api-v2
+- Developer API: https://glpi-developer-documentation.readthedocs.io/en/master/devapi/index.html
+- Разработка плагинов: https://glpi-developer-documentation.readthedocs.io/en/master/plugins/index.html
 
 ## Текущий статус (2026-08-16)
 - **Phase A реализована, в отладке/тестировании.** Маппинг тикета, org sync, L1-writeback
