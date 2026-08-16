@@ -7,7 +7,7 @@ Mocking strategy: patch ``app.services.org_sync.BitrixClient`` /
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -24,6 +24,18 @@ def _patch_to_thread():
     with patch(
         "app.services.org_sync.asyncio.to_thread",
         new=_sync_to_thread,
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _patch_maps():
+    """Isolate the org mapping DB tables."""
+    with (
+        patch("app.services.org_sync.load_department_map", new=AsyncMock(return_value={})),
+        patch("app.services.org_sync.upsert_department_map", new=AsyncMock()),
+        patch("app.services.org_sync.load_user_map", new=AsyncMock(return_value={})),
+        patch("app.services.org_sync.upsert_user_map", new=AsyncMock()),
     ):
         yield
 
@@ -135,6 +147,10 @@ class TestSyncOrgStructure:
             email="ivan@example.ru",
             entities_id=26,
             profiles_id=1,
+            phone=None,
+            mobile=None,
+            comment="Бухгалтер",
+            sync_field="10",
             session_token="org-session",
         )
         # Session released.
@@ -182,6 +198,10 @@ class TestSyncOrgStructure:
             realname="Иванов",
             firstname="Иван",
             entities_id=25,
+            phone=None,
+            mobile=None,
+            comment=None,
+            sync_field="10",
             session_token="org-session",
         )
         glpi.create_user.assert_not_called()
@@ -229,6 +249,10 @@ class TestSyncOrgStructure:
             email=None,
             entities_id=25,
             profiles_id=1,
+            phone=None,
+            mobile=None,
+            comment=None,
+            sync_field="77",
             session_token="org-session",
         )
 

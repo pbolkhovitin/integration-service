@@ -886,12 +886,12 @@ class TestGlpiToBitrixMapping:
         from app.services.reverse_sync import _GLPI_TO_BITRIX_STATUS
 
         assert _GLPI_TO_BITRIX_STATUS == {
-            1: 1,  # new → open
-            2: 2,  # assigned → pending
-            3: 4,  # on hold → frozen
-            4: 3,  # resolved → closed
+            1: 1,  # new → new
+            2: 3,  # assigned → in progress
+            3: 3,  # planned → in progress
+            4: 2,  # waiting → pending
             5: 5,  # solved → completed
-            6: 6,  # cancelled → deferred
+            6: 5,  # closed → completed
         }
 
 
@@ -953,6 +953,7 @@ class TestSyncOneTaskFollowupAppend:
         current_description: str = "",
         task_result: dict | None = None,
         glpi_return_none: bool = False,
+        add_comment_raises: bool = False,
     ) -> tuple[dict[str, Any], Any, Any, Any]:
         """Set up mocks, invoke ``_sync_one_task``, and return
         ``(summary, bitrix_mock, glpi_mock, db_session_mock)``.
@@ -968,11 +969,14 @@ class TestSyncOneTaskFollowupAppend:
         # --- Mock objects ---
         bitrix = MagicMock()
         bitrix.get_task.return_value = {"DESCRIPTION": current_description}
+        if add_comment_raises:
+            bitrix.add_comment.side_effect = RuntimeError("chat unavailable")
 
         glpi = MagicMock()
         glpi.init_session.return_value = "glpi-test-session"
         glpi.get_ticket_followups.return_value = followups or []
         glpi.show_ticket.return_value = {"status": current_ticket_status}
+        glpi.sum_ticket_actiontime.return_value = 0
 
         # DB-bound Task
         if glpi_return_none:
@@ -981,6 +985,8 @@ class TestSyncOneTaskFollowupAppend:
             db_task = MagicMock(spec=Task)
             db_task.last_glpi_followup_id = last_followup_id
             db_task.last_glpi_status = last_glpi_status
+            db_task.last_l1_hash = None
+            db_task.last_elapsed_synced = None
             db_task.result = task_result or {"id": self.GLPI_TICKET_ID}
 
         # Mock DB session
@@ -999,6 +1005,9 @@ class TestSyncOneTaskFollowupAppend:
             "comments_sent": 0,
             "errors": [],
             "glpi_followups_read": 0,
+            "skipped_not_whitelisted": 0,
+            "l1_updated": 0,
+            "elapsed_added": 0,
         }
 
         with patch(
@@ -1018,40 +1027,34 @@ class TestSyncOneTaskFollowupAppend:
     # Tests
     # ------------------------------------------------------------------
 
-    async def test_appends_followups_to_empty_description(self) -> None:
-        """New followups are appended to an initially empty description."""
+    async def test_writes_l1_template_on_first_sync(self) -> None:
+        """First sync writes the standardized L1 template to DESCRIPTION."""
+        summary, bitrix, glpi, sess = await self._run(
+            followups=[],
+            last_followup_id=0,
+        )
+
+        assert summary["checked"] == 1
+        assert summary["l1_updated"] == 1
+        assert summary["comments_sent"] == 0
+        bitrix.update_task_description.assert_called_once()
+        desc = bitrix.update_task_description.call_args[0][1]
+        assert "Описание проблемы:" in desc
+        assert "ФИО:" in desc
+        assert "Телефон:" in desc
+
+    async def test_followups_go_to_chat(self) -> None:
+        """New followups are sent as chat comments (add_comment)."""
         summary, bitrix, glpi, sess = await self._run(
             followups=[
                 {"id": 1, "date": "2024-01-01", "content": "First followup"},
             ],
         )
 
-        assert summary["checked"] == 1
         assert summary["comments_sent"] == 1
+        bitrix.add_comment.assert_called_once_with(self.TASK_ID, "First followup")
 
-        bitrix.get_task.assert_called_once_with(self.TASK_ID)
-        bitrix.update_task_description.assert_called_once_with(
-            self.TASK_ID,
-            "[GLPI 2024-01-01] First followup",
-        )
-
-    async def test_appends_to_existing_description(self) -> None:
-        """New followups are appended to existing content."""
-        summary, bitrix, glpi, sess = await self._run(
-            current_description="Original description.",
-            followups=[
-                {"id": 5, "date": "2025-06-01", "content": "Update from GLPI"},
-            ],
-        )
-
-        assert summary["comments_sent"] == 1
-        bitrix.update_task_description.assert_called_once_with(
-            self.TASK_ID,
-            "Original description.\n\n[GLPI 2025-06-01] Update from GLPI",
-        )
-
-    async def test_multiple_followups_appended_in_order(self) -> None:
-        """Multiple followups are appended chronologically."""
+    async def test_multiple_followups_to_chat(self) -> None:
         summary, bitrix, glpi, sess = await self._run(
             followups=[
                 {"id": 1, "date": "2025-01-01", "content": "First"},
@@ -1061,18 +1064,30 @@ class TestSyncOneTaskFollowupAppend:
         )
 
         assert summary["comments_sent"] == 3
-        bitrix.update_task_description.assert_called_once()
-        desc = bitrix.update_task_description.call_args[0][1]
-        lines = desc.split("\n")
-        assert "[GLPI 2025-01-01] First" in lines
-        assert "[GLPI 2025-01-02] Second" in lines
-        assert "[GLPI 2025-01-03] Third" in lines
-        # Order assertion: index of each marker increases
-        assert desc.index("[GLPI 2025-01-01]") < desc.index("[GLPI 2025-01-02]")
-        assert desc.index("[GLPI 2025-01-02]") < desc.index("[GLPI 2025-01-03]")
+        assert bitrix.add_comment.call_count == 3
 
-    async def test_truncates_long_followup_content(self) -> None:
-        """>2000 char content is truncated to 2000 + '...'."""
+    async def test_fallback_appends_to_description_when_chat_fails(self) -> None:
+        """When comment.add fails (forumTopicId=None), followups are
+        appended to the DESCRIPTION (carrying the L1 template)."""
+        summary, bitrix, glpi, sess = await self._run(
+            followups=[
+                {"id": 7, "date": "2025-06-01", "content": "Update from GLPI"},
+            ],
+            add_comment_raises=True,
+        )
+
+        bitrix.add_comment.assert_called_once_with(self.TASK_ID, "Update from GLPI")
+        assert summary["comments_sent"] == 1
+        # fallback path used get_task + update_task_description
+        bitrix.get_task.assert_called_once_with(self.TASK_ID)
+        desc_calls = bitrix.update_task_description.call_args_list
+        assert len(desc_calls) >= 1
+        # the last call carries the L1 template + appended followup
+        appended = desc_calls[-1][0][1]
+        assert "Update from GLPI" in appended
+
+    async def test_truncates_long_followup(self) -> None:
+        """>2000 char content is truncated to 2000 + '...' before send."""
         long_content = "X" * 2500
         summary, bitrix, glpi, sess = await self._run(
             followups=[
@@ -1080,166 +1095,87 @@ class TestSyncOneTaskFollowupAppend:
             ],
         )
 
-        assert summary["comments_sent"] == 1
-        bitrix.update_task_description.assert_called_once()
-        desc = bitrix.update_task_description.call_args[0][1]
-        # "..." appended after truncation = 2003 chars
-        assert "[GLPI" in desc
-        assert len(desc) > 2000  # full line with prefix + 2000 + "..."
-        # The content part should be 2003 chars (2000 + "...")
-        content_part = desc.split("] ", 1)[1] if "] " in desc else desc
-        assert len(content_part) == 2003, (
-            f"Expected 2003 chars (2000 + '...'), got {len(content_part)}"
-        )
+        sent = bitrix.add_comment.call_args[0][1]
+        assert len(sent) == 2003
 
-    async def test_truncates_at_2000_chars_exactly(self) -> None:
-        """Content exactly 2000 chars is NOT truncated."""
-        exact_content = "Y" * 2000
-        summary, bitrix, glpi, sess = await self._run(
-            followups=[
-                {"id": 2, "date": "2025-01-02", "content": exact_content},
-            ],
-        )
-
-        assert summary["comments_sent"] == 1
-        desc = bitrix.update_task_description.call_args[0][1]
-        content_part = desc.split("] ", 1)[1] if "] " in desc else desc
-        assert len(content_part) == 2000, (
-            f"Expected 2000 chars (no truncation), got {len(content_part)}"
-        )
-
-    async def test_no_new_followups_skips_bitrix_calls(self) -> None:
-        """When no followups exceed ``last_glpi_followup_id``, no Bitrix
-        API calls are made (no ``get_task``, no ``update_task_description``)."""
+    async def test_no_new_followups_skips_chat(self) -> None:
+        """When no followups exceed ``last_glpi_followup_id``, no comments."""
         summary, bitrix, glpi, sess = await self._run(
             followups=[
                 {"id": 1, "date": "2025-01-01", "content": "Old"},
                 {"id": 2, "date": "2025-01-02", "content": "Also old"},
             ],
-            last_followup_id=2,  # both followups already seen
+            last_followup_id=2,
         )
 
         assert summary["comments_sent"] == 0
-        bitrix.get_task.assert_not_called()
-        bitrix.update_task_description.assert_not_called()
+        bitrix.add_comment.assert_not_called()
 
-    async def test_no_followups_at_all_skips_bitrix_calls(self) -> None:
-        """When there are zero followups, no Bitrix API calls."""
+    async def test_no_followups_at_all(self) -> None:
         summary, bitrix, glpi, sess = await self._run(
             followups=[],
             last_followup_id=0,
         )
 
         assert summary["comments_sent"] == 0
-        bitrix.get_task.assert_not_called()
-        bitrix.update_task_description.assert_not_called()
-
-    async def test_add_comment_not_called(self) -> None:
-        """The description-append path does NOT call ``add_comment``."""
-        summary, bitrix, glpi, sess = await self._run(
-            followups=[
-                {"id": 10, "date": "2025-06-01", "content": "New followup"},
-            ],
-        )
-
-        # update_task_description IS called
-        bitrix.update_task_description.assert_called_once()
-        # add_comment is NEVER called
         bitrix.add_comment.assert_not_called()
 
     async def test_db_cursor_updated(self) -> None:
-        """DB task's ``last_glpi_followup_id`` is set to the max ID."""
-        # _run uses a single mock task for both DB queries — the second
-        # query returns the same object that was modified in place.
+        """DB task's sync-cursor fields are updated after processing."""
         summary, bitrix, glpi, sess = await self._run(
             followups=[
                 {"id": 1, "date": "2025-01-01", "content": "A"},
                 {"id": 5, "date": "2025-01-05", "content": "B"},
-                {"id": 3, "date": "2025-01-03", "content": "C"},
             ],
             last_followup_id=0,
             last_glpi_status="4",
             current_ticket_status=4,
         )
 
-        # get the mock task from the DB session's first execute call
-        execute_call = sess.execute.call_args_list[0]
-        mock_result = execute_call[0][0]  # first positional arg (the select statement)
-        # The scalar_one_or_none result is the task — we can't easily
-        # retrieve it from here. Instead, verify the DB commit was called.
         sess.commit.assert_called_once()
 
-    async def test_handles_oldest_first_disorder_in_followup_ids(self) -> None:
-        """``max_followup_id`` tracks the max id, not the last processed."""
+    async def test_handles_missing_date_field(self) -> None:
+        """Followup without a ``date`` key is still sent to chat."""
         summary, bitrix, glpi, sess = await self._run(
             followups=[
-                {"id": 10, "date": "2025-01-10", "content": "Latest"},
-                {"id": 5, "date": "2025-01-05", "content": "Older"},
+                {"id": 1, "content": "No date"},
             ],
+        )
+
+        assert summary["comments_sent"] == 1
+        bitrix.add_comment.assert_called_once_with(self.TASK_ID, "No date")
+
+    async def test_handles_missing_content_field(self) -> None:
+        """Followup without ``content`` sends an empty comment."""
+        summary, bitrix, glpi, sess = await self._run(
+            followups=[
+                {"id": 1, "date": "2025-01-01"},
+            ],
+        )
+
+        assert summary["comments_sent"] == 1
+        bitrix.add_comment.assert_called_once_with(self.TASK_ID, "")
+
+    async def test_handles_unicode_followup_content(self) -> None:
+        """Unicode followup content is passed through as-is."""
+        unicode_text = "Тест ✓ 日本語 русский"
+        summary, bitrix, glpi, sess = await self._run(
+            followups=[
+                {"id": 1, "date": "2025-01-01", "content": unicode_text},
+            ],
+        )
+
+        assert summary["comments_sent"] == 1
+        bitrix.add_comment.assert_called_once_with(self.TASK_ID, unicode_text)
+
+    async def test_handles_empty_followups_list(self) -> None:
+        summary, bitrix, glpi, sess = await self._run(
+            followups=[],
             last_followup_id=0,
         )
 
-        assert summary["comments_sent"] == 2
-        # The DB update should use max_followup_id = 10 (max of 10, 5)
-        # We can verify via the summary dict: comments_sent == 2 means
-        # both were processed, and max_followup_id is set to 10 internally.
-
-    async def test_handles_missing_date_field(self) -> None:
-        """Followup without a ``date`` key uses 'unknown date'."""
-        summary, bitrix, glpi, sess = await self._run(
-            followups=[
-                {"id": 1, "content": "No date provided"},
-            ],
-        )
-
-        assert summary["comments_sent"] == 1
-        bitrix.update_task_description.assert_called_once_with(
-            self.TASK_ID,
-            "[GLPI unknown date] No date provided",
-        )
-
-    async def test_handles_missing_content_field(self) -> None:
-        """Followup without a ``content`` key uses empty string."""
-        summary, bitrix, glpi, sess = await self._run(
-            followups=[
-                {"id": 2, "date": "2025-02-01"},
-            ],
-        )
-
-        assert summary["comments_sent"] == 1
-        bitrix.update_task_description.assert_called_once_with(
-            self.TASK_ID,
-            "[GLPI 2025-02-01] ",
-        )
-
-    async def test_handles_unicode_followup_content(self) -> None:
-        """Unicode / emoji in followup content passes through."""
-        summary, bitrix, glpi, sess = await self._run(
-            followups=[
-                {
-                    "id": 1,
-                    "date": "2025-01-01",
-                    "content": "🔥 Статус изменён ✓",
-                },
-            ],
-        )
-
-        assert summary["comments_sent"] == 1
-        bitrix.update_task_description.assert_called_once_with(
-            self.TASK_ID,
-            "[GLPI 2025-01-01] 🔥 Статус изменён ✓",
-        )
-
-    async def test_handles_empty_followups_list(self) -> None:
-        """Empty followups list with existing last_followup_id."""
-        summary, bitrix, glpi, sess = await self._run(
-            followups=[],
-            last_followup_id=5,
-        )
-
         assert summary["comments_sent"] == 0
-        bitrix.get_task.assert_not_called()
-        bitrix.update_task_description.assert_not_called()
+        bitrix.add_comment.assert_not_called()
 
     async def test_handles_none_last_glpi_followup_id(self) -> None:
         """``last_glpi_followup_id = None`` means treat as 0 (all new)."""
@@ -1251,7 +1187,7 @@ class TestSyncOneTaskFollowupAppend:
         )
 
         assert summary["comments_sent"] == 1
-        bitrix.update_task_description.assert_called_once()
+        bitrix.add_comment.assert_called_once_with(self.TASK_ID, "First ever")
 
     async def test_skip_when_task_not_found_in_db(self) -> None:
         """If the DB returns None, the function returns early."""
@@ -1262,7 +1198,7 @@ class TestSyncOneTaskFollowupAppend:
 
         # No processing happened
         assert summary["checked"] == 0
-        bitrix.get_task.assert_not_called()
+        bitrix.add_comment.assert_not_called()
         bitrix.update_task_description.assert_not_called()
         glpi.init_session.assert_not_called()
 

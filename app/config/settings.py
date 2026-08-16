@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     # GLPI profile assigned to synced users (1 = Self-Service).
     ORG_SYNC_USER_PROFILE_ID: int = 1
 
+    # L1 write-back.
+    # Minimum elapsed time (seconds) written to Bitrix24 when a task has no
+    # recorded time (duplicate / not-relevant tasks) — Bitrix24 refuses to
+    # complete a task without elapsed time.
+    L1_MIN_ELAPSED_SECONDS: int = 60
+    # Allow creating NEW Bitrix24 tasks from GLPI tickets (phone calls).
+    # Disabled by default; enable only after the main exchange is tested.
+    BITRIX24_CREATE_TASKS_ENABLED: bool = False
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

@@ -105,3 +105,9 @@ class Task(Base, TimestampMixin):
     last_glpi_followup_id: Mapped[int | None] = mapped_column(
         Integer, nullable=True, default=None
     )
+    last_elapsed_synced: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
+    last_l1_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )

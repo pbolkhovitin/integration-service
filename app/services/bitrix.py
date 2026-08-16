@@ -253,6 +253,35 @@ class BitrixClient:
         )
         return result.get("result", {}).get("task", {})
 
+    def add_elapsed(
+        self, task_id: int, seconds: int, comment: str = ""
+    ) -> dict[str, Any]:
+        """Record elapsed time against a Bitrix24 task.
+
+        Uses ``task.elapseditem.add.json``. Bitrix24 refuses to complete a
+        task without recorded elapsed time — this is how work time is
+        accounted back from GLPI.
+
+        Args:
+            task_id: Bitrix24 task ID.
+            seconds: Elapsed seconds to add.
+            comment: Optional comment for the time record.
+
+        Returns:
+            The API result dict.
+
+        Raises:
+            RuntimeError: On HTTP failure.
+        """
+        fields: dict[str, Any] = {"SECONDS": seconds}
+        if comment:
+            fields["COMMENT"] = comment
+        result = self._call(
+            "task.elapseditem.add.json",
+            json_body={"taskId": task_id, "fields": fields},
+        )
+        return result.get("result", {})
+
     def get_departments(self) -> list[dict[str, Any]]:
         """Get the company department tree from Bitrix24.
 
@@ -308,6 +337,8 @@ class BitrixClient:
                     "last_name": str(u.get("LAST_NAME", "")),
                     "email": str(u.get("EMAIL", "") or ""),
                     "work_position": str(u.get("WORK_POSITION", "") or ""),
+                    "phone": str(u.get("PERSONAL_PHONE", "") or ""),
+                    "mobile": str(u.get("PERSONAL_MOBILE", "") or ""),
                     "active": bool(u.get("ACTIVE", False)),
                     "department_ids": [
                         int(x) for x in (u.get("UF_DEPARTMENT") or [])

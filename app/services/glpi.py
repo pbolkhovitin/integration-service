@@ -131,6 +131,16 @@ class GLPIClient:
         category_id: int | None = None,
         group_id: int | None = None,
         entity_id: int | None = None,
+        *,
+        requester_id: int | None = None,
+        assignee_id: int | None = None,
+        date: str | None = None,
+        time_to_resolve: str | None = None,
+        closedate: str | None = None,
+        priority: int | None = None,
+        status: int | None = None,
+        itilcategories_id: int | None = None,
+        externalid: str | None = None,
     ) -> dict[str, Any]:
         """Create a new GLPI incident ticket.
 
@@ -146,6 +156,15 @@ class GLPIClient:
             category_id: Optional GLPI category ID (``categories_id``).
             group_id: Optional GLPI group ID (``groups_id``).
             entity_id: Optional GLPI entity ID (``entities_id``).
+            requester_id: GLPI user ID of the requester (``_users_id_requester``).
+            assignee_id: GLPI user ID of the assignee/technician.
+            date: Creation datetime ``"YYYY-MM-DD HH:MM:SS"``.
+            time_to_resolve: SLA deadline datetime.
+            closedate: Closed datetime.
+            priority: GLPI priority (1..5).
+            status: GLPI ticket status (1..6).
+            itilcategories_id: GLPI ITIL category ID.
+            externalid: External task ID (Bitrix24 task number).
 
         Returns:
             Parsed JSON response as a dictionary.
@@ -165,6 +184,24 @@ class GLPIClient:
             ticket["groups_id"] = group_id
         if entity_id is not None:
             ticket["entities_id"] = entity_id
+        if requester_id is not None:
+            ticket["_users_id_requester"] = requester_id
+        if assignee_id is not None:
+            ticket["_users_id_assign"] = assignee_id
+        if date is not None:
+            ticket["date"] = date
+        if time_to_resolve is not None:
+            ticket["time_to_resolve"] = time_to_resolve
+        if closedate is not None:
+            ticket["closedate"] = closedate
+        if priority is not None:
+            ticket["priority"] = priority
+        if status is not None:
+            ticket["status"] = status
+        if itilcategories_id is not None:
+            ticket["itilcategories_id"] = itilcategories_id
+        if externalid is not None:
+            ticket["externalid"] = externalid
         payload: dict[str, list[dict[str, Any]]] = {"input": [ticket]}
         logger.debug("POST %s — creating ticket %r", url, name)
 
@@ -308,6 +345,32 @@ class GLPIClient:
             session_token=session_token,
         )
 
+    def update_entity(
+        self,
+        entity_id: int,
+        *,
+        name: str | None = None,
+        parent_id: int | None = None,
+        is_active: bool | None = None,
+        session_token: str,
+    ) -> dict[str, Any]:
+        """Update a GLPI entity (rename / re-parent / activate-deactivate)."""
+        fields: dict[str, Any] = {}
+        if name is not None:
+            fields["name"] = name
+        if parent_id is not None:
+            fields["entities_id"] = parent_id
+        if is_active is not None:
+            fields["is_active"] = 1 if is_active else 0
+        if not fields:
+            return {}
+        return self._call(
+            method="PUT",
+            url=f"{self._base_url}/apirest.php/Entity/{entity_id}",
+            json_body={"input": fields},
+            session_token=session_token,
+        )
+
     def get_user_emails(self, session_token: str) -> list[dict[str, Any]]:
         """Return all GLPI user emails (users_id → email)."""
         emails: list[dict[str, Any]] = []
@@ -345,6 +408,10 @@ class GLPIClient:
         entities_id: int,
         profiles_id: int,
         session_token: str,
+        phone: str | None = None,
+        mobile: str | None = None,
+        comment: str | None = None,
+        sync_field: str | None = None,
     ) -> dict[str, Any]:
         """Create a GLPI user (login=*name*, email via ``_useremails``)."""
         fields: dict[str, Any] = {
@@ -356,6 +423,14 @@ class GLPIClient:
         }
         if email:
             fields["_useremails"] = [email]
+        if phone:
+            fields["phone"] = phone
+        if mobile:
+            fields["mobile"] = mobile
+        if comment:
+            fields["comment"] = comment
+        if sync_field:
+            fields["sync_field"] = sync_field
         return self._call(
             method="POST",
             url=f"{self._base_url}/apirest.php/User",
@@ -370,9 +445,14 @@ class GLPIClient:
         realname: str | None = None,
         firstname: str | None = None,
         entities_id: int | None = None,
+        phone: str | None = None,
+        mobile: str | None = None,
+        comment: str | None = None,
+        sync_field: str | None = None,
+        is_active: bool | None = None,
         session_token: str,
     ) -> dict[str, Any]:
-        """Update a GLPI user's name/entity."""
+        """Update a GLPI user's profile fields."""
         fields: dict[str, Any] = {}
         if realname is not None:
             fields["realname"] = realname
@@ -380,12 +460,64 @@ class GLPIClient:
             fields["firstname"] = firstname
         if entities_id is not None:
             fields["entities_id"] = entities_id
+        if phone is not None:
+            fields["phone"] = phone
+        if mobile is not None:
+            fields["mobile"] = mobile
+        if comment is not None:
+            fields["comment"] = comment
+        if sync_field is not None:
+            fields["sync_field"] = sync_field
+        if is_active is not None:
+            fields["is_active"] = 1 if is_active else 0
         if not fields:
             return {}
         return self._call(
             method="PUT",
             url=f"{self._base_url}/apirest.php/User/{user_id}",
             json_body={"input": fields},
+            session_token=session_token,
+        )
+
+    # ------------------------------------------------------------------
+    # L1 write-back support
+    # ------------------------------------------------------------------
+
+    def get_user(self, user_id: int, session_token: str) -> dict[str, Any]:
+        """Return a GLPI user's profile (name/phone/etc.)."""
+        return self._call(
+            method="GET",
+            url=f"{self._base_url}/apirest.php/User/{user_id}",
+            session_token=session_token,
+        )
+
+    def sum_ticket_actiontime(
+        self, ticket_id: int, session_token: str
+    ) -> int:
+        """Return the total actiontime (seconds) of a ticket's tasks."""
+        result = self._call(
+            method="GET",
+            url=(
+                f"{self._base_url}/apirest.php/Ticket/{ticket_id}"
+                "/TicketTask"
+            ),
+            session_token=session_token,
+        )
+        total = 0
+        if isinstance(result, list):
+            for task in result:
+                at = task.get("actiontime") if isinstance(task, dict) else None
+                if isinstance(at, (int, float)):
+                    total += int(at)
+        return total
+
+    def get_itilcategory(
+        self, category_id: int, session_token: str
+    ) -> dict[str, Any]:
+        """Return an ITIL category (for its name)."""
+        return self._call(
+            method="GET",
+            url=f"{self._base_url}/apirest.php/ITILCategory/{category_id}",
             session_token=session_token,
         )
 

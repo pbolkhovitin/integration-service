@@ -4,6 +4,7 @@ Runs ONLY for whitelisted test task IDs when TEST_MODE=True.
 """
 
 import asyncio
+import hashlib
 import logging
 
 from sqlalchemy import select
@@ -17,15 +18,72 @@ from app.services.test_tasks import allowed_test_task_ids
 
 logger = logging.getLogger(__name__)
 
-# GLPI status → Bitrix24 status mapping
+# GLPI status → Bitrix24 status mapping (reverse sync / L1 write-back).
 _GLPI_TO_BITRIX_STATUS: dict[int, int] = {
-    1: 1,  # new → open
-    2: 2,  # in progress / assigned → pending
-    3: 4,  # on hold → frozen
-    4: 3,  # resolved → closed
+    1: 1,  # new → new
+    2: 3,  # assigned → in progress
+    3: 3,  # planned → in progress
+    4: 2,  # waiting → pending
     5: 5,  # solved → completed
-    6: 6,  # cancelled → deferred
+    6: 5,  # closed → completed
 }
+
+_GLPI_PRIORITY_LABELS: dict[int, str] = {
+    1: "Низкий",
+    2: "Ниже среднего",
+    3: "Средний",
+    4: "Высокий",
+    5: "Очень высокий",
+}
+
+
+def _build_l1_template_from_ticket(
+    glpi_client: GLPIClient, ticket_info: dict, glpi_session: str
+) -> str:
+    """Compose the L1 description template from a GLPI ticket.
+
+    Reads the ticket's requester (name/phone), category and priority and
+    renders the standardized L1 template written back to Bitrix24.
+    """
+    from app.services.ticket_mapper import build_l1_template
+
+    requester_id = ticket_info.get("users_id_recipient")
+    fio = ""
+    phone = ""
+    if requester_id:
+        try:
+            user = glpi_client.get_user(requester_id, glpi_session)
+            if isinstance(user, dict):
+                fio = " ".join(
+                    p for p in (user.get("realname") or "", user.get("firstname") or "") if p
+                )
+                phone = str(user.get("phone") or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "L1: failed to load requester %s: %s", requester_id, exc
+            )
+
+    category = ""
+    cat_id = ticket_info.get("itilcategories_id")
+    if cat_id:
+        try:
+            cat = glpi_client.get_itilcategory(int(cat_id), glpi_session)
+            if isinstance(cat, dict):
+                category = str(cat.get("name") or "")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("L1: failed to load category %s: %s", cat_id, exc)
+
+    priority = _GLPI_PRIORITY_LABELS.get(int(ticket_info.get("priority") or 0), "")
+
+    return build_l1_template(
+        fio=fio,
+        phone=phone,
+        organization="",
+        location="",
+        category=category,
+        priority=priority,
+        problem_description=ticket_info.get("content") or "",
+    )
 
 
 def _is_whitelisted_task(task_id: int) -> bool:
@@ -118,6 +176,8 @@ async def reverse_sync_test_tasks() -> dict:
         "errors": [],
         "glpi_followups_read": 0,
         "skipped_not_whitelisted": 0,
+        "l1_updated": 0,
+        "elapsed_added": 0,
     }
 
     try:
@@ -214,6 +274,25 @@ async def _sync_one_task(
         summary["checked"] += 1
         summary["glpi_followups_read"] += len(followups)
 
+    # --- L1 TEMPLATE (uniform DESCRIPTION in Bitrix24) ---
+        l1_template = _build_l1_template_from_ticket(
+            glpi_client, ticket_info, glpi_session
+        )
+        l1_hash = hashlib.sha256(l1_template.encode()).hexdigest()
+        if task.last_l1_hash != l1_hash:
+            await asyncio.to_thread(
+                bitrix_client.update_task_description,
+                task_id,
+                l1_template,
+            )
+            summary["l1_updated"] += 1
+            logger.info(
+                "Reverse sync: wrote L1 template to Bitrix24 task %s", task_id
+            )
+            last_l1_hash = l1_hash
+        else:
+            last_l1_hash = task.last_l1_hash
+
     # --- STATUS SYNC ---
         last_glpi_status: int | None = None
         if task.last_glpi_status is not None:
@@ -239,51 +318,67 @@ async def _sync_one_task(
                 mapped_status,
             )
 
-        # --- FOLLOWUP SYNC (description append for forumTopicId=None tasks) ---
+    # --- TIME SYNC (elapseditem.add, min fallback) ---
+        last_elapsed: int = task.last_elapsed_synced or 0
+        actiontime = await asyncio.to_thread(
+            glpi_client.sum_ticket_actiontime, glpi_ticket_id, glpi_session
+        )
+        if actiontime > last_elapsed:
+            minutes = max(actiontime, settings.L1_MIN_ELAPSED_SECONDS)
+            await asyncio.to_thread(
+                bitrix_client.add_elapsed, task_id, minutes
+            )
+            summary["elapsed_added"] += 1
+            logger.info(
+                "Reverse sync: added %ds elapsed to Bitrix24 task %s",
+                minutes, task_id,
+            )
+            last_elapsed_synced = actiontime
+        else:
+            last_elapsed_synced = last_elapsed
+
+    # --- FOLLOWUP SYNC (chat comment, fallback: description append) ---
         last_followup_id: int = task.last_glpi_followup_id or 0
         max_followup_id: int = last_followup_id
         new_followups = [
             f for f in followups if f.get("id", 0) > last_followup_id
         ]
 
-        if new_followups:
-            # Get current Bitrix24 task description
-            b24_task = await asyncio.to_thread(
-                bitrix_client.get_task, task_id,
-            )
-            current_desc = b24_task.get("DESCRIPTION") or ""
-
-            # Append all new followups to description
-            updated_desc = current_desc
-            for fu in new_followups:
-                fu_id = fu.get("id", 0)
-                fu_date = fu.get("date", "unknown date")
-                fu_content = fu.get("content", "")
-                # Truncate very long content (Bitrix24 description has limits)
-                if len(fu_content) > 2000:
-                    fu_content = fu_content[:2000] + "..."
-                separator = "\n\n" if updated_desc else ""
-                updated_desc += f"{separator}[GLPI {fu_date}] {fu_content}"
-                if fu_id > max_followup_id:
-                    max_followup_id = fu_id
-
-            # Cap total description length to stay within Bitrix24 TEXT limit (~65KB)
-            MAX_DESC_LENGTH = 60000
-            if len(updated_desc) > MAX_DESC_LENGTH:
-                updated_desc = updated_desc[:MAX_DESC_LENGTH] + "\n\n... [truncated]"
-
-            # Write back once (single API call for all followups)
-            await asyncio.to_thread(
-                bitrix_client.update_task_description,
-                task_id,
-                updated_desc,
-            )
-            summary["comments_sent"] += len(new_followups)
-            logger.info(
-                "Reverse sync: appended %d followups to Bitrix24 task %s description",
-                len(new_followups),
-                task_id,
-            )
+        for fu in new_followups:
+            fu_id = fu.get("id", 0)
+            fu_content = fu.get("content", "")
+            if len(fu_content) > 2000:
+                fu_content = fu_content[:2000] + "..."
+            try:
+                await asyncio.to_thread(
+                    bitrix_client.add_comment, task_id, fu_content
+                )
+                summary["comments_sent"] += 1
+            except Exception as exc:  # noqa: BLE001
+                # forumTopicId=None tasks reject comment.add — fallback to
+                # appending to the DESCRIPTION (which carries the L1 template).
+                logger.info(
+                    "comment.add failed for task %s (fallback to description): %s",
+                    task_id, exc,
+                )
+                b24_task = await asyncio.to_thread(
+                    bitrix_client.get_task, task_id,
+                )
+                current_desc = b24_task.get("DESCRIPTION") or ""
+                separator = "\n\n" if current_desc else ""
+                updated_desc = (
+                    current_desc
+                    + f"{separator}[GLPI followup #{fu_id}] {fu_content}"
+                )
+                if len(updated_desc) > 60000:
+                    updated_desc = updated_desc[:60000] + "\n\n... [truncated]"
+                await asyncio.to_thread(
+                    bitrix_client.update_task_description,
+                    task_id,
+                    updated_desc,
+                )
+                summary["comments_sent"] += 1
+            max_followup_id = max(max_followup_id, fu_id)
 
         # --- UPDATE DB ---
         async with async_session_factory() as db:
@@ -299,6 +394,8 @@ async def _sync_one_task(
                 db_task.last_glpi_followup_id = (
                     max_followup_id if max_followup_id > 0 else None
                 )
+                db_task.last_l1_hash = last_l1_hash
+                db_task.last_elapsed_synced = last_elapsed_synced
                 await db.commit()
     finally:
         # Always release the GLPI session, even on early return/error.
