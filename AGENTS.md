@@ -29,6 +29,12 @@ NetBox→GLPI, Zabbix, SLA/Metabase, MANGO.
    Admin в GLPI 11 не даёт CREATE на Entity.
 7. Bitrix24 list-фильтры диапазонов не работают (только равенство) → окно задач
    фильтруется клиентски (BITRIX24_SYNC_LOOKBACK_DAYS).
+8. **Чат задач B24** живёт в IM-модуле (задача ссылается через `chatId`), НЕ в форуме
+   (`forumTopicId`). Чтение `im.v2.Chat.Message.list`, запись `im.message.add` — нужен
+   **im-скоуп** (`BITRIX24_IM_WEBHOOK_URL`, fallback org webhook).
+9. **Тест-задачи: только разрешённые пользователи** — Болховитин (577), Техподдержка ИТ (70),
+   Гриднев (445), Ушков (545). Уваркин (172) и другие — исключены
+   (`BITRIX24_TEST_TASK_USER_IDS`).
 
 ## Что читать
 - **Первым**: `docs/project-context.md` (статус, активные задачи, ограничения, эндпоинты).
