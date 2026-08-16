@@ -55,6 +55,20 @@ GLPI 11.0.8 (Docker), NetBox 4.5.7, Zabbix, MariaDB, Redis.
 - **Автодобавление**: задачи с ключевым словом `Test_GLPI` в title автоматически
   добавляются в whitelist при поллинге (`BITRIX24_AUTO_WHITELIST_KEYWORD`, пусто = off).
 - Reverse sync обрабатывает весь whitelist (env + runtime).
+- **Только разрешённые пользователи** для тест-задач: Болховитин (577), Техподдержка ИТ (70),
+  Гриднев (445), Ушков (545) — `BITRIX24_TEST_TASK_USER_IDS`. Уваркин (172) и другие исключены
+  из requester/assignee/observers тест-тикетов.
+
+## Чат задач B24 ↔ GLPI (двусторонний)
+- Чат задачи живёт в IM-модуле; задача ссылается на него через `chatId`. Требуется
+  вебхук со скоупом `im` — `BITRIX24_IM_WEBHOOK_URL` (fallback org webhook).
+- **B24 → GLPI**: `im.v2.Chat.Message.list` (chatId) → зеркалирование в GLPI followup
+  (`mirrored_followups` — защита от петель). Первый прогон — только базовая линия
+  (`last_b24_comment_id`), история не воспроизводится. Системные сообщения
+  (`[USER=..] стал наблюдателем`) фильтруются.
+- **GLPI → B24**: followup → `im.message.add` (CHAT_ID+MESSAGE) в чат задачи; нет чата → fallback
+  в DESCRIPTION. Зеркальные followup не возвращаются (loop protection).
+- **Ограничено тест-задачами** в текущей фазе.
 
 ## Настройки (.env, key)
 `BITRIX24_WEBHOOK_URL`, `BITRIX24_ORG_WEBHOOK_URL` (права user+department),
