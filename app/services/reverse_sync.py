@@ -45,7 +45,7 @@ def _build_l1_template_from_ticket(
     Reads the ticket's requester (name/phone), category and priority and
     renders the standardized L1 template written back to Bitrix24.
     """
-    from app.services.ticket_mapper import build_l1_template
+    from app.services.ticket_mapper import build_l1_template, extract_problem_description
 
     requester_id = None
     try:
@@ -94,7 +94,9 @@ def _build_l1_template_from_ticket(
         location="",
         category=category,
         priority=priority,
-        problem_description=ticket_info.get("content") or "",
+        problem_description=extract_problem_description(
+            ticket_info.get("content")
+        ),
     )
 
 

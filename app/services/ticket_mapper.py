@@ -105,6 +105,22 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
 
 DEFAULT_CATEGORY = "Другое"
 
+
+def extract_problem_description(content: str | None) -> str:
+    """Extract the clean problem text from a description that may contain
+    the L1 template (ФИО/Телефон/Организация/…/Описание проблемы: …).
+
+    If the text has the "Описание проблемы:" marker, return everything
+    after the LAST occurrence (the innermost, cleanest problem text).
+    Otherwise return the content stripped.
+    """
+    text = (content or "").strip()
+    marker = "описание проблемы:"
+    if marker in text.lower():
+        idx = text.lower().rfind(marker)
+        return text[idx + len(marker):].strip()
+    return text
+
 # L1 write-back template (fields filled from the GLPI ticket).
 L1_TEMPLATE = (
     "ФИО: {fio}\n"

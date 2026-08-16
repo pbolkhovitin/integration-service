@@ -25,6 +25,7 @@ from app.services.reverse_sync import reverse_sync_test_tasks
 from app.services.test_tasks import allowed_test_task_ids
 from app.services.ticket_mapper import (
     classify_category,
+    extract_problem_description,
     map_priority,
     map_status,
     parse_dt,
@@ -343,7 +344,7 @@ async def _process_task(
         logger.warning("Failed to fetch tags for task %s: %s", task_id, exc)
         task_data["TAGS"] = []
 
-    content = description.strip() or _build_ticket_content(task_data)
+    content = extract_problem_description(description) or _build_ticket_content(task_data)
 
     # --- Phase A: mapped ticket fields ---
     user_map = await load_user_map()
