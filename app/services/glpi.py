@@ -141,6 +141,7 @@ class GLPIClient:
         status: int | None = None,
         itilcategories_id: int | None = None,
         externalid: str | None = None,
+        requesttypes_id: int | None = None,
     ) -> dict[str, Any]:
         """Create a new GLPI incident ticket.
 
@@ -202,6 +203,8 @@ class GLPIClient:
             ticket["itilcategories_id"] = itilcategories_id
         if externalid is not None:
             ticket["externalid"] = externalid
+        if requesttypes_id is not None:
+            ticket["requesttypes_id"] = requesttypes_id
         payload: dict[str, list[dict[str, Any]]] = {"input": [ticket]}
         logger.debug("POST %s — creating ticket %r", url, name)
 

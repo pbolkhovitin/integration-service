@@ -380,12 +380,13 @@ async def _process_task(
     try:
         ticket = await asyncio.to_thread(
             glpi_client.create_ticket,
-            name=f"[Bitrix24 #{task_id}] {title}",
+            name=title,
             content=content,
             session_token=glpi_session,
             category_id=category_id or settings.GLPI_DEFAULT_CATEGORY_ID,
             group_id=settings.GLPI_DEFAULT_GROUP_ID,
             entity_id=settings.GLPI_DEFAULT_ENTITY_ID,
+            requesttypes_id=settings.GLPI_BITRIX24_REQUESTTYPE_ID,
             date=parse_dt(task_data.get("CREATED_DATE")),
             time_to_resolve=parse_dt(task_data.get("DEADLINE")),
             closedate=parse_dt(task_data.get("CLOSED_DATE")),

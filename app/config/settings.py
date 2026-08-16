@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     GLPI_DEFAULT_CATEGORY_ID: int = 1  # Инцидент
     GLPI_DEFAULT_GROUP_ID: int = 1  # IT-поддержка L1
     GLPI_DEFAULT_ENTITY_ID: int = 2  # Департамент IT
+    # GLPI request type (Источник запросов) for Bitrix24-originated tickets.
+    GLPI_BITRIX24_REQUESTTYPE_ID: int = 7
 
     # Org sync (Bitrix24 users + departments → GLPI).
     # BITRIX24_ORG_WEBHOOK_URL — webhook WITH user/department scope (the
