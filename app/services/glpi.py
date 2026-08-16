@@ -316,24 +316,34 @@ class GLPIClient:
     # ------------------------------------------------------------------
 
     def get_entities(self, session_token: str) -> list[dict[str, Any]]:
-        """Return the full list of GLPI entities (id, name, parent id)."""
-        result = self._call(
-            method="GET",
-            url=f"{self._base_url}/apirest.php/Entity",
-            session_token=session_token,
-        )
-        if not isinstance(result, list):
-            return []
-        return [
-            {
-                "id": int(e.get("id")),
-                "name": str(e.get("name", "")),
-                "parent_id": int(e.get("entities_id"))
-                if e.get("entities_id") is not None
-                else None,
-            }
-            for e in result
-        ]
+        """Return the full list of GLPI entities (id, name, parent id), paginated."""
+        out: list[dict[str, Any]] = []
+        start = 0
+        page_size = 100
+        while True:
+            result = self._call(
+                method="GET",
+                url=f"{self._base_url}/apirest.php/Entity",
+                params={"range": f"{start}-{start + page_size - 1}"},
+                session_token=session_token,
+            )
+            if not isinstance(result, list) or not result:
+                break
+            for e in result:
+                if isinstance(e, dict):
+                    out.append(
+                        {
+                            "id": int(e.get("id")),
+                            "name": str(e.get("name", "")),
+                            "parent_id": int(e.get("entities_id"))
+                            if e.get("entities_id") is not None
+                            else None,
+                        }
+                    )
+            if len(result) < page_size:
+                break
+            start += page_size
+        return out
 
     def create_entity(
         self, name: str, parent_id: int, session_token: str
@@ -526,25 +536,32 @@ class GLPIClient:
         )
 
     def get_categories(self, session_token: str) -> list[dict[str, Any]]:
-        """Return the list of GLPI ITIL categories (id + name)."""
-        result = self._call(
-            method="GET",
-            url=f"{self._base_url}/apirest.php/ITILCategory",
-            session_token=session_token,
-        )
-        if not isinstance(result, list):
-            return []
+        """Return the list of GLPI ITIL categories (id + name), paginated."""
         out: list[dict[str, Any]] = []
-        for c in result:
-            if isinstance(c, dict):
-                cid = c.get("id")
-                if cid is not None:
-                    out.append(
-                        {
-                            "id": int(cid),
-                            "name": str(c.get("name", "")),
-                        }
-                    )
+        start = 0
+        page_size = 100
+        while True:
+            result = self._call(
+                method="GET",
+                url=f"{self._base_url}/apirest.php/ITILCategory",
+                params={"range": f"{start}-{start + page_size - 1}"},
+                session_token=session_token,
+            )
+            if not isinstance(result, list) or not result:
+                break
+            for c in result:
+                if isinstance(c, dict):
+                    cid = c.get("id")
+                    if cid is not None:
+                        out.append(
+                            {
+                                "id": int(cid),
+                                "name": str(c.get("name", "")),
+                            }
+                        )
+            if len(result) < page_size:
+                break
+            start += page_size
         return out
 
     def get_ticket_requesters(
