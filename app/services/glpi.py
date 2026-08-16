@@ -142,6 +142,7 @@ class GLPIClient:
         itilcategories_id: int | None = None,
         externalid: str | None = None,
         requesttypes_id: int | None = None,
+        ticket_type: int = 1,
     ) -> dict[str, Any]:
         """Create a new GLPI incident ticket.
 
@@ -177,7 +178,7 @@ class GLPIClient:
         ticket: dict[str, Any] = {
             "name": name,
             "content": content,
-            "type": 1,
+            "type": ticket_type,
         }
         if category_id is not None:
             ticket["categories_id"] = category_id

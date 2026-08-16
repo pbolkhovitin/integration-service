@@ -387,6 +387,7 @@ async def _process_task(
             group_id=settings.GLPI_DEFAULT_GROUP_ID,
             entity_id=settings.GLPI_DEFAULT_ENTITY_ID,
             requesttypes_id=settings.GLPI_BITRIX24_REQUESTTYPE_ID,
+            ticket_type=2,  # сервисные запросы (Запрос)
             date=parse_dt(task_data.get("CREATED_DATE")),
             time_to_resolve=parse_dt(task_data.get("DEADLINE")),
             closedate=parse_dt(task_data.get("CLOSED_DATE")),
