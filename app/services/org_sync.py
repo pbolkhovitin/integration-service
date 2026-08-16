@@ -173,7 +173,14 @@ async def sync_org_structure() -> dict:
 
         dept_map = await load_department_map()
         root_entity_id = settings.ORG_SYNC_ROOT_ENTITY_ID
+        # GLPI system root (0) — parent for separate legal entities (ООО)
+        # that are independent companies at the holding level (siblings of АО).
+        top_entity_id = settings.ORG_SYNC_TOP_ENTITY_ID
         seen_depts: set[int] = set()
+        b24_root_id: int | None = None
+
+        def _is_ooo(name: str) -> bool:
+            return "ООО " in name or "ооо " in name.lower()
 
         async def _refresh_session() -> None:
             """Re-init the GLPI session to refresh the rights cache.
@@ -194,11 +201,21 @@ async def sync_org_structure() -> dict:
         for dept in _sort_departments(departments):
             seen_depts.add(dept["id"])
             if dept["parent_id"] is None:
-                # Bitrix24 root department → configured root entity.
+                # Bitrix24 root department («АО «АПО «Аврора»») → the
+                # top-level АО entity.
+                b24_root_id = dept["id"]
                 await upsert_department_map(dept["id"], root_entity_id)
                 continue
 
             parent_entity_id = dept_map.get(dept["parent_id"], root_entity_id)
+            # Separate legal entities (ООО) directly under the B24 root are
+            # independent companies — top-level, siblings of АО (in the holding).
+            if (
+                b24_root_id is not None
+                and dept["parent_id"] == b24_root_id
+                and _is_ooo(dept["name"])
+            ):
+                parent_entity_id = top_entity_id
             entity_id = dept_map.get(dept["id"])
             if entity_id is None:
                 # No mapping yet: match by name under parent, else create.

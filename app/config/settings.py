@@ -56,7 +56,10 @@ class Settings(BaseSettings):
     ORG_SYNC_ENABLED: bool = False
     ORG_SYNC_INTERVAL_SECONDS: int = 3600
     # GLPI root entity under which the Bitrix24 department tree is mirrored.
-    ORG_SYNC_ROOT_ENTITY_ID: int = 25  # АО «АПО «Аврора»
+    ORG_SYNC_ROOT_ENTITY_ID: int = 1  # «АО «АПО «Аврора»»
+    # GLPI system root (0) — parent for separate legal entities (ООО) that
+    # are independent companies at the holding level (siblings of АО).
+    ORG_SYNC_TOP_ENTITY_ID: int = 0
     # GLPI profile assigned to synced users (1 = Self-Service).
     ORG_SYNC_USER_PROFILE_ID: int = 1
 
