@@ -320,6 +320,7 @@ async def _process_task(
         "skipped" if the task was already processed or should be skipped.
     """
     task_id = str(task_data.get("ID", ""))
+    tid_int = int(task_id) if task_id.isdigit() else None
     title = task_data.get("TITLE", "Untitled")
     description = task_data.get("DESCRIPTION", "")
     status = task_data.get("STATUS")
@@ -395,7 +396,6 @@ async def _process_task(
     )
 
     # Test tasks (whitelisted) may only involve allowed test users as actors.
-    tid_int = int(task_id) if task_id.isdigit() else None
     if allowed_test and tid_int is not None and tid_int in allowed_test:
         allowed = settings.test_task_user_ids
         b24_requester = int(task_data.get("CREATED_BY") or 0)
