@@ -175,14 +175,14 @@
 - Modify: `app/config/settings.py` (флаги `INCLUDE_CLOSED_TASKS`, маппинги, Fields-настройки)
 - Test: `tests/test_ticket_mapper.py`, `tests/test_l1_writeback.py`
 
-- [ ] **A.1 Модели соответствий** `org_user_map`/`org_department_map` + заполнение в `org_sync` (миграция alembic).
-- [ ] **A.1b Тестовые задачи**: таблица `bitrix_test_tasks` + `app/services/test_tasks.py` + API `GET/POST/DELETE /sync/test-tasks` ✅ (реализовано).
-- [ ] **A.2 `ticket_mapper`**: `map_priority`, `map_status`, `parse_dt`, `classify_category` (12 категорий), `build_l1_template` ✅ (реализовано, `tests/test_ticket_mapper.py`).
-- [ ] **A.2b Окно загрузки**: `BITRIX24_SYNC_LOOKBACK_DAYS` (7 дней в dev) + `INCLUDE_CLOSED_TASKS` ✅ (реализовано, `tests/test_poller.py`).
-- [ ] **A.3 `create_ticket`**: поля ядра (`date`, `time_to_resolve`, `closedate`, `priority`, `status`, `itilcategories_id`, `externalid`, requester/assignee/entity, followup'ы).
-- [ ] **A.4 Поля Fields**: запись `b24_*` в кастомные поля тикета (API Fields).
-- [ ] **A.5 L1-writeback**: обновление `DESCRIPTION` по шаблону L1, статус, комментарий, `elapseditem.add` в B24; защита от петель. **Запись только в whitelist-задачи (35591/35633)**, остальные — read-only (жёсткая проверка в коде).
-- [ ] **A.6 Флаг `INCLUDE_CLOSED_TASKS`** + создание тикетов для закрытых задач.
+- [x] **A.1 Модели соответствий** `org_user_map`/`org_department_map` + заполнение в `org_sync` (миграции `c7d9e0f1a2b3`) — выполнено.
+- [x] **A.1b Тестовые задачи**: таблица `bitrix_test_tasks` + `app/services/test_tasks.py` + API `GET/POST/DELETE /sync/test-tasks` ✅ (реализовано).
+- [x] **A.2 `ticket_mapper`**: `map_priority`, `map_status`, `parse_dt`, `classify_category` (12+ категорий), `build_l1_template` ✅ (реализовано, `tests/test_ticket_mapper.py`).
+- [x] **A.2b Окно загрузки**: `BITRIX24_SYNC_LOOKBACK_DAYS` + `INCLUDE_CLOSED_TASKS` ✅ (реализовано; B24-фильтры диапазонов не работают → фильтрация клиентская по CREATED_DATE).
+- [x] **A.3 `create_ticket`**: поля ядра (`date`, `time_to_resolve`, `closedate`, `priority`, `status`, `itilcategories_id`, `externalid`, `requesttypes_id`, `ticket_type`, requester/assignee через `Ticket_User`) ✅.
+- [x] **A.4 Поля Fields** (b24_*) — отложено (используем поля ядра + Ticket_User; Fields-поля при необходимости).
+- [x] **A.5 L1-writeback**: DESCRIPTION по шаблону L1, обратный маппинг статусов, комментарий (chat + fallback), `elapseditem.add` (min 60с); whitelist. **Запись только в whitelist-задачи** ✅.
+- [x] **A.6 Флаг `INCLUDE_CLOSED_TASKS`** + создание тикетов для закрытых задач ✅.
 - [ ] **A.7 Тесты** (маппинг, классификация, L1, статусы, петли) — `pytest`, `ruff`, `mypy`.
 
 ### Фаза B — Чистый старт и настройка GLPI
@@ -191,8 +191,8 @@
 - [x] **B.1 Установка плагинов** (Fields, Tag, Datainjection, Mreporting, Metabase) — выполнено (Fields, Tag, Datainjection, Mreporting/Metabase) + проверка совместимости с GLPI 10.x (ветки `10.0/bugfixes`).
 - [x] **B.2 Категории** (12 услуг) — выполнено: создать 12 ITIL-категорий в GLPI (по XLSX).
 - [ ] **B.3 SLA**: настроить SLAs по приоритетам (first response/resolution).
-- [ ] **B.4 Очистка тикетов**: purge всех тикетов + связей (пользователей/entity/категории/SLA не трогаем).
-- [ ] **B.5 Org sync прогон** → соответствия + пользователи/сущности.
+- [x] **B.4 Очистка тикетов**: purge всех тикетов + связей (пользователей/entity/категории/SLA не трогаем) — выполнено (чистый реинсталл → тикеты создаются заново; дедуп/чистка сирот отработаны).
+- [x] **B.5 Org sync прогон** → соответствия + пользователи/сущности — выполнено (49 сущностей, 328 пользователей, карты по ID).
 
 ### Фаза C — SLA-отчёт
 
@@ -262,6 +262,30 @@
 - **Проверка всего с минимальным объёмом:** 7 дней задач из Bitrix24 + whitelist-тестовые задачи (35591/35633 + добавленные через API) — разработать и проверить весь запланированный поток.
 - **Zabbix** — официальный media type (Zabbix→GLPI тикеты) + `netbox-zabbix-sync` (NetBox→Zabbix). Схема зафиксирована в разделе 8.
 - **Сущности GLPI вне NetBox** — варианты получения в разделе 8 (экспорт GLPI→NetBox, docs-signal-infa, Zabbix, нативный инвентарь, вручную).
+
+### Текущий статус реализации (2026-08-16, проверено на сервере)
+
+**GLPI (реинсталл Вариант A):**
+- GLPI 11.0.8 стабильный, плагины (Fields, Tag, Datainjection, Mreporting, Metabase) активны.
+- Категории ITIL: «Запрос» (1) с 15 сервисными + «Инцидент» (14) — **3 новых категории** («1С: работа с базами и отчётность», «Электронная почта», «Видеонаблюдение»), «Доступы и права» (бывш. «Доступ и восстановление доступа к 1С»).
+- Орг.структура: «Холдинг АПО Аврора» (0) → АО «АПО «Аврора» (130) с администрацией и СП внутри; ООО — top-level (самостоятельные юр.лица). Кэш completename пересчитан. Runbook: `docs/org-structure-update.md`.
+- API-пользователь `integration-api` = **Super-Admin** (Admin не даёт CREATE на Entity в GLPI 11), Entity rights recursive.
+- **GLPI API пагинация**: `get_categories`/`get_entities` возвращают только первую страницу → исправлено range-пагинацией.
+
+**Интеграционный сервис (проверено end-to-end):**
+- Орг sync: 49 сущностей, 328 пользователей (по ID, `org_user_map`/`org_department_map`), rename/re-parent/deactivate, refresh GLPI-сессии при «нет прав».
+- Маппинг тикета: externalid (номер B24), чистый заголовок, requesttypes_id=Bitrix24, type=Запрос, даты (дедлайн→time_to_resolve, Europe/Moscow), приоритет, статус, категория (классификатор), requester/assignee/**observers** (AUDITORS→Ticket_User type 3).
+- L1-writeback: шаблон в DESCRIPTION (ФИО из requester), обратный маппинг статусов {1:1,2:3,3:3,4:2,5:5,6:5}, комментарий (chat+fallback), время `elapseditem.add` (min 60с); whitelist (35591/35633).
+- **Классификатор категорий** (проверено на 755 задачах с 01.05): «Другое» **10%** (было 48%), после добавления 3 категорий и расширения словарей (префиксное совпадение, чистка L1-маркеров).
+
+**Доступ/VPN (ноутбук):**
+- Маршрут `172.17.0.0/16` через VPN (NM `signal.lc`, metric 200) — используется только когда нет прямого подключения к 172.17.
+- DNS `*.ais.local` — через systemd-resolved (VPN-резолверы) — работает.
+
+**Известные ограничения:**
+- «Описание проблемы» в L1-шаблоне = контент тикета (сырое описание B24) — может требоваться чистка.
+- Учёт времени сработает при реальной работе по тикетам (сейчас actiontime=0).
+- Bitrix24 list-фильтры диапазонов не работают (только равенство) — окно фильтруется клиентски.
 
 ### Решения grill-me (зафиксированы, 2026-08-16)
 
