@@ -34,20 +34,29 @@ GLPI 11.0.8 (Docker), NetBox 4.5.7, Zabbix, MariaDB, Redis.
 **Bitrix24:**
 - MCP/инструменты: https://apidocs.bitrix24.ru/ai-tools/mcp.html
 - API Reference: https://apidocs.bitrix24.ru/api-reference/index.html
+- **Портал apidocs.bitrix24.ru** — справочник всех методов REST (tasks, user, department, im,
+  скоупы, параметры). Для любой работы с Bitrix24 (интеграция).
 
 **GLPI:**
+- Портал документации: https://help.glpi-project.org/documentation
+  (GitBook, **AI-запросы**: `?ask=<вопрос>&goal=<цель>`; схемы БД GLPI 10/11 на dbdocs;
+  агент инвентаризации, плагины).
 - Общая документация API: https://help.glpi-project.org/documentation/modules/configuration/general/api/api
 - REST API v2: https://help.glpi-project.org/documentation/modules/configuration/general/api/restful-api-v2
 - Developer API: https://glpi-developer-documentation.readthedocs.io/en/master/devapi/index.html
 - Разработка плагинов: https://glpi-developer-documentation.readthedocs.io/en/master/plugins/index.html
 
 ## MCP-инструменты (потенциальные)
-- **mcp-glpi** (github.com/GMS64260/mcp-glpi, v3, MIT, npm `mcp-glpi`) — MCP-сервер GLPI:
-  тикеты (CRUD/timeline/search/overdue-SLA), Problems/Changes, активы, статистика
-  (`glpi_tickets_stats_by`), users/groups/entities, knowledge base. Конфиг:
-  `GLPI_URL`+`GLPI_APP_TOKEN`/`GLPI_USER_TOKEN`. Совместим с GLPI 11.0.8.
-  **Статус: зафиксирован** (не подключён). Идеи применения: отладка/верификация интеграции
-  из агента, AI Service Desk, дополнение к SLA-отчёту.
+Сравнение MCP-серверов GLPI:
+- **GMS64260/mcp-glpi** (v3, MIT, npm `mcp-glpi`) — **рекомендуется**: тикеты CRUD/timeline/
+  search/overdue-SLA, активы, статистика (`glpi_tickets_stats_by`), users/entities, validation.
+  Работает через REST v1 (наша auth — App/User token). Совместим с GLPI 11.0.8.
+- **ageugyn/glpi-mcp-server** (MIT) — альтернатива: GLPI 11 **HLAPI + OAuth2**, нативные
+  формы GLPI 11 (list/submit forms), меньше инструментов.
+- **Статус: зафиксированы, не подключены.** Идеи: отладка/верификация интеграции из агента,
+  AI Service Desk, дополнение к SLA-отчёту.
+- Применение источников: help.glpi-project.org — справка/схемы БД/AI-запросы при отладке GLPI;
+  apidocs.bitrix24.ru — методы/скоупы Bitrix24; MCP-серверы — прямое чтение/операции GLPI из агента.
 
 ## Текущий статус (2026-08-16)
 - **Phase A реализована, в отладке/тестировании.** Маппинг тикета, org sync, L1-writeback
