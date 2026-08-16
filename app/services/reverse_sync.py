@@ -172,7 +172,9 @@ async def reverse_sync_test_tasks() -> dict:
     if not settings.TEST_MODE:
         return {"error": "TEST_MODE is disabled"}
 
-    test_ids = settings.test_task_ids
+    # Process the FULL writable whitelist (env TEST_TASK_IDS + runtime
+    # bitrix_test_tasks additions, e.g. auto-whitelisted "Test_GLPI" tasks).
+    test_ids = sorted(await allowed_test_task_ids())
     if not test_ids:
         return {"error": "No test task IDs configured"}
 
