@@ -69,7 +69,7 @@ def _build_l1_template_from_ticket(
                 fio = " ".join(
                     p for p in (user.get("realname") or "", user.get("firstname") or "") if p
                 )
-                phone = str(user.get("phone") or "")
+                phone = str(user.get("phone") or user.get("mobile") or "")
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "L1: failed to load requester %s: %s", requester_id, exc
