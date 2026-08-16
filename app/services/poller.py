@@ -343,7 +343,7 @@ async def _process_task(
         logger.warning("Failed to fetch tags for task %s: %s", task_id, exc)
         task_data["TAGS"] = []
 
-    content = _build_ticket_content(task_data)
+    content = description.strip() or _build_ticket_content(task_data)
 
     # --- Phase A: mapped ticket fields ---
     user_map = await load_user_map()
