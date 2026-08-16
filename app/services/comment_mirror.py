@@ -95,6 +95,17 @@ async def mirror_task_comments(
     if not messages:
         return 0
 
+    # Skip system messages (author_id=0, e.g. "[USER=..] стал наблюдателем").
+    def _is_system(m: dict) -> bool:
+        if m.get("author_id"):
+            return False
+        text = (m.get("text") or "").lstrip()
+        return text.startswith("[USER=") or not text
+
+    messages = [m for m in messages if not _is_system(m)]
+    if not messages:
+        return 0
+
     last = task.last_b24_comment_id or 0
     if task.last_b24_comment_id is None:
         # First run: baseline to the latest message without replaying the
