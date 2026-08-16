@@ -87,7 +87,8 @@ CATEGORY_KEYWORDS: dict[str, list[str]] = {
     ],
     "Настройка и поддержка IP-телефонии": [
         "телефония", "ip-телефон", "voip", "атс", "звонки",
-        "телефонная линия", "не работает телефон", "телефон",
+        "телефонная линия", "не работает телефон", "стационарный телефон",
+        "сотовый телефон",
     ],
     "Сопровождение платформы Битрикс 24": [
         "битрикс", "bitrix", "битрикс 24", "битрикс24", "bitrix24",
@@ -144,11 +145,16 @@ def parse_dt(value: Any) -> str | None:
 
 
 def classify_category(title: str | None, description: str | None) -> str:
-    """Classify a Bitrix24 task into a service category by keywords."""
+    """Classify a Bitrix24 task into a service category by keywords.
+
+    Uses prefix matching (word start) so that e.g. "почт" matches "почта",
+    "камер" matches "камеры". The L1 description template's "Телефон:" line
+    is excluded from classification (see L1-UNSAFE keywords).
+    """
     text = f"{title or ''} {description or ''}".lower()
     for category_name, keywords in CATEGORY_KEYWORDS.items():
         for kw in keywords:
-            pattern = r"\b" + re.escape(kw.lower()) + r"\b"
+            pattern = r"\b" + re.escape(kw.lower())
             if re.search(pattern, text, re.UNICODE):
                 return category_name
     return DEFAULT_CATEGORY
