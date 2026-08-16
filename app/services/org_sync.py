@@ -175,7 +175,7 @@ async def sync_org_structure() -> dict:
         root_entity_id = settings.ORG_SYNC_ROOT_ENTITY_ID
         seen_depts: set[int] = set()
 
-        def _refresh_session() -> None:
+        async def _refresh_session() -> None:
             """Re-init the GLPI session to refresh the rights cache.
 
             GLPI caches per-session rights; entities created during the
@@ -185,10 +185,10 @@ async def sync_org_structure() -> dict:
             nonlocal glpi_session
             if glpi_session:
                 try:
-                    asyncio.to_thread(glpi_client.kill_session, glpi_session)
+                    await asyncio.to_thread(glpi_client.kill_session, glpi_session)
                 except Exception:  # noqa: BLE001
                     pass
-            glpi_session = asyncio.to_thread(glpi_client.init_session)
+            glpi_session = await asyncio.to_thread(glpi_client.init_session)
 
         # --- Mirror department tree, matching by org_department_map ---
         for dept in _sort_departments(departments):
@@ -216,7 +216,7 @@ async def sync_org_structure() -> dict:
                     except (RuntimeError, ValueError, TypeError) as exc:
                         # Likely a rights-cache miss — refresh session, retry once.
                         if "нет прав" in str(exc) or "ERROR_GLPI_ADD" in str(exc):
-                            _refresh_session()
+                            await _refresh_session()
                             try:
                                 created = await asyncio.to_thread(
                                     glpi_client.create_entity,
