@@ -19,6 +19,7 @@ from app.config.settings import settings
 from app.core.database import async_session_factory
 from app.models.task import Task
 from app.services.bitrix import BitrixClient
+from app.services.comment_mirror import mirror_task_comments
 from app.services.glpi import GLPIClient
 from app.services.org_sync import load_user_map, sync_org_structure
 from app.services.reverse_sync import reverse_sync_test_tasks
@@ -342,6 +343,16 @@ async def _process_task(
         existing = result.scalar_one_or_none()
         if existing is not None:
             if not _should_retry_task(existing):
+                # Mirror any new Bitrix24 chat comments into GLPI followups.
+                try:
+                    await mirror_task_comments(
+                        existing, bitrix_client, glpi_client, glpi_session
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to mirror B24 comments for task %s: %s",
+                        task_id, exc,
+                    )
                 return "skipped"
             # Retry failed/stale task: bump attempts and reset state.
             existing.attempts += 1
@@ -478,6 +489,16 @@ async def _process_task(
             task.status = "completed"
             task.result = ticket
             await db.commit()
+
+    # Mirror Bitrix24 task chat comments into GLPI followups (B24 → GLPI).
+    try:
+        await mirror_task_comments(
+            task, bitrix_client, glpi_client, glpi_session
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to mirror B24 comments for task %s: %s", task_id, exc
+        )
 
     logger.info(
         "Created GLPI ticket %s for Bitrix24 task %s: %s",

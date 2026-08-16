@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # regular BITRIX24_WEBHOOK_URL does not have these rights). Empty =
     # org sync disabled.
     BITRIX24_ORG_WEBHOOK_URL: str = ""
+    # Webhook WITH the "im" scope — required for task-chat messages
+    # (im.v2.Chat.Message.list / im.message.add). Falls back to the org
+    # webhook (which typically has im scope).
+    BITRIX24_IM_WEBHOOK_URL: str = ""
     # Run org sync on a schedule (manual POST /api/bitrix24/sync/org always works).
     ORG_SYNC_ENABLED: bool = False
     ORG_SYNC_INTERVAL_SECONDS: int = 3600
@@ -103,6 +107,11 @@ class Settings(BaseSettings):
         if not self.CORS_ORIGINS:
             return []
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def im_webhook_url(self) -> str:
+        """Webhook with the 'im' scope for task-chat operations."""
+        return self.BITRIX24_IM_WEBHOOK_URL or self.BITRIX24_ORG_WEBHOOK_URL
 
 
 settings = Settings()

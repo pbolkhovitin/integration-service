@@ -253,6 +253,75 @@ class BitrixClient:
         )
         return result.get("result", {}).get("task", {})
 
+    def get_chat_id(self, task_id: int) -> int | None:
+        """Return the task's chat ID (chat.id) or None if no chat exists.
+
+        The task chat lives in the IM module; the task only references it via
+        ``chat.id``. Tasks never communicated on may have no chat at all.
+        """
+        result = self._call("tasks.task.get.json", params={"taskId": task_id})
+        task_data = result.get("result", {})
+        if isinstance(task_data, dict) and "task" in task_data:
+            task_data = task_data["task"]
+        chat_id = task_data.get("chatId")
+        if chat_id is None:
+            chat_id = task_data.get("CHAT_ID")
+        return int(chat_id) if chat_id else None
+
+    def get_chat_messages(self, task_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        """Get the task chat messages (requires an ``im``-scoped webhook).
+
+        Uses ``im.v2.Chat.Message.list`` (modern portal) or falls back to the
+        legacy ``task.commentitem.getlist`` when the task has no chat.
+
+        Returns a list of messages with ``id``, ``text``, ``author_id``,
+        ``date``. Empty when the task has no chat.
+        """
+        chat_id = self.get_chat_id(task_id)
+        if not chat_id:
+            return []
+        try:
+            result = self._call(
+                "im.v2.Chat.Message.list",
+                params={"chatId": chat_id, "limit": limit},
+            )
+        except RuntimeError as exc:
+            logger.warning("im.v2.Chat.Message.list failed: %s", exc)
+            return []
+        res = result.get("result", {})
+        messages = res.get("messages", []) if isinstance(res, dict) else []
+        out: list[dict[str, Any]] = []
+        for m in messages or []:
+            if not isinstance(m, dict):
+                continue
+            out.append(
+                {
+                    "id": int(m.get("id") or 0),
+                    "text": str(m.get("text") or m.get("message") or ""),
+                    "author_id": int(
+                        m.get("authorId") or m.get("author_id") or 0
+                    ),
+                    "date": str(m.get("date") or ""),
+                }
+            )
+        return out
+
+    def add_chat_message(self, task_id: int, message: str) -> int | None:
+        """Add a message to the task chat (requires an ``im``-scoped webhook).
+
+        Uses ``im.message.add``. Returns the new message ID, or None when the
+        task has no chat.
+        """
+        chat_id = self.get_chat_id(task_id)
+        if not chat_id:
+            return None
+        result = self._call(
+            "im.message.add",
+            json_body={"CHAT_ID": chat_id, "MESSAGE": message},
+        )
+        msg_id = result.get("result")
+        return int(msg_id) if msg_id else None
+
     def add_elapsed(
         self, task_id: int, seconds: int, comment: str = ""
     ) -> dict[str, Any]:

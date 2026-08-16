@@ -590,6 +590,29 @@ class GLPIClient:
                         out.append(int(uid))
         return out
 
+    def add_followup(
+        self,
+        ticket_id: int,
+        content: str,
+        session_token: str,
+        *,
+        is_private: bool = False,
+    ) -> dict[str, Any]:
+        """Add a followup (comment) to a GLPI ticket."""
+        return self._call(
+            method="POST",
+            url=f"{self._base_url}/apirest.php/ITILFollowup",
+            json_body={
+                "input": {
+                    "items_id": ticket_id,
+                    "itemtype": "Ticket",
+                    "content": content,
+                    "is_private": 1 if is_private else 0,
+                }
+            },
+            session_token=session_token,
+        )
+
     def add_ticket_user(
         self,
         ticket_id: int,

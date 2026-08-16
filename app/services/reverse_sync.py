@@ -13,6 +13,7 @@ from app.config.settings import settings
 from app.core.database import async_session_factory
 from app.models.task import Task
 from app.services.bitrix import BitrixClient
+from app.services.comment_mirror import is_mirrored_followup
 from app.services.glpi import GLPIClient
 from app.services.test_tasks import allowed_test_task_ids
 
@@ -353,48 +354,58 @@ async def _sync_one_task(
         else:
             last_elapsed_synced = last_elapsed
 
-    # --- FOLLOWUP SYNC (chat comment, fallback: description append) ---
+    # --- FOLLOWUP SYNC (task chat; no chat → description) ---
         last_followup_id: int = task.last_glpi_followup_id or 0
         max_followup_id: int = last_followup_id
         new_followups = [
             f for f in followups if f.get("id", 0) > last_followup_id
         ]
 
+        # Tasks without a chat (no chatId) have nowhere to send messages —
+        # route comments to the DESCRIPTION (visible).
+        fallback_contents: list[str] = []
+        chat_client = bitrix_client
+        if settings.im_webhook_url:
+            chat_client = BitrixClient(webhook_url=settings.im_webhook_url)
+
         for fu in new_followups:
             fu_id = fu.get("id", 0)
+            # Skip followups mirrored FROM Bitrix24 chat (loop protection).
+            if fu_id and await is_mirrored_followup(fu_id):
+                logger.debug(
+                    "Reverse sync: skip mirrored followup %s (from B24)", fu_id
+                )
+                max_followup_id = max(max_followup_id, fu_id)
+                continue
             fu_content = fu.get("content", "")
             if len(fu_content) > 2000:
                 fu_content = fu_content[:2000] + "..."
-            try:
-                await asyncio.to_thread(
-                    bitrix_client.add_comment, task_id, fu_content
-                )
+            msg_id = await asyncio.to_thread(
+                chat_client.add_chat_message, task_id, fu_content
+            )
+            if msg_id is not None:
                 summary["comments_sent"] += 1
-            except Exception as exc:  # noqa: BLE001
-                # forumTopicId=None tasks reject comment.add — fallback to
-                # appending to the DESCRIPTION (which carries the L1 template).
+            else:
                 logger.info(
-                    "comment.add failed for task %s (fallback to description): %s",
-                    task_id, exc,
+                    "Task %s has no chat — comment routed to description", task_id
                 )
-                b24_task = await asyncio.to_thread(
-                    bitrix_client.get_task, task_id,
-                )
-                current_desc = b24_task.get("DESCRIPTION") or ""
-                separator = "\n\n" if current_desc else ""
-                updated_desc = (
-                    current_desc
-                    + f"{separator}[GLPI followup #{fu_id}] {fu_content}"
-                )
-                if len(updated_desc) > 60000:
-                    updated_desc = updated_desc[:60000] + "\n\n... [truncated]"
-                await asyncio.to_thread(
-                    bitrix_client.update_task_description,
-                    task_id,
-                    updated_desc,
-                )
-                summary["comments_sent"] += 1
+                fallback_contents.append(fu_content)
             max_followup_id = max(max_followup_id, fu_id)
+
+        if fallback_contents:
+            b24_task = await asyncio.to_thread(bitrix_client.get_task, task_id)
+            current_desc = b24_task.get("DESCRIPTION") or ""
+            for content in fallback_contents:
+                separator = "\n\n" if current_desc else ""
+                current_desc += f"{separator}[GLPI followup] {content}"
+                summary["comments_sent"] += 1
+            if len(current_desc) > 60000:
+                current_desc = current_desc[:60000] + "\n\n... [truncated]"
+            await asyncio.to_thread(
+                bitrix_client.update_task_description,
+                task_id,
+                current_desc,
+            )
 
         # --- UPDATE DB ---
         async with async_session_factory() as db:

@@ -111,3 +111,6 @@ class Task(Base, TimestampMixin):
     last_l1_hash: Mapped[str | None] = mapped_column(
         String(64), nullable=True, default=None
     )
+    last_b24_comment_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, default=None
+    )
