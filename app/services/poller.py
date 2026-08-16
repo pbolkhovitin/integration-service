@@ -386,8 +386,6 @@ async def _process_task(
             category_id=category_id or settings.GLPI_DEFAULT_CATEGORY_ID,
             group_id=settings.GLPI_DEFAULT_GROUP_ID,
             entity_id=settings.GLPI_DEFAULT_ENTITY_ID,
-            requester_id=requester_id,
-            assignee_id=assignee_id,
             date=parse_dt(task_data.get("CREATED_DATE")),
             time_to_resolve=parse_dt(task_data.get("DEADLINE")),
             closedate=parse_dt(task_data.get("CLOSED_DATE")),
@@ -396,6 +394,26 @@ async def _process_task(
             itilcategories_id=category_id,
             externalid=task_id,
         )
+        # GLPI 11 forces the session user as requester on creation — assign
+        # the real requester/assignee via the Ticket_User relation.
+        ticket_id = _extract_created_ticket_id(ticket)
+        if ticket_id:
+            if requester_id:
+                await asyncio.to_thread(
+                    glpi_client.add_ticket_user,
+                    ticket_id,
+                    requester_id,
+                    1,
+                    glpi_session,
+                )
+            if assignee_id:
+                await asyncio.to_thread(
+                    glpi_client.add_ticket_user,
+                    ticket_id,
+                    assignee_id,
+                    2,
+                    glpi_session,
+                )
     except Exception as exc:
         logger.error("Failed to create GLPI ticket for task %s: %s", task_id, exc)
         async with async_session_factory() as db:
@@ -457,6 +475,17 @@ def _build_ticket_content(task_data: dict) -> str:
         task_data.get("DESCRIPTION", "N/A"),
     ])
     return "\n".join(lines)
+
+
+def _extract_created_ticket_id(ticket) -> int | None:
+    """Extract the created GLPI ticket ID from the create_ticket response."""
+    if isinstance(ticket, list) and ticket and isinstance(ticket[0], dict):
+        tid = ticket[0].get("id")
+        return int(tid) if tid is not None else None
+    if isinstance(ticket, dict):
+        tid = ticket.get("id")
+        return int(tid) if tid is not None else None
+    return None
 
 
 def _extract_glpi_ticket_id(task: Task) -> int | None:

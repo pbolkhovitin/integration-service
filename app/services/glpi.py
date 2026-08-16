@@ -543,6 +543,32 @@ class GLPIClient:
                     )
         return out
 
+    def add_ticket_user(
+        self,
+        ticket_id: int,
+        user_id: int,
+        role: int,
+        session_token: str,
+    ) -> dict[str, Any]:
+        """Associate a user with a ticket (role: 1=requester, 2=assignee).
+
+        GLPI 11's ticket-creation API ignores ``_users_id_requester`` and
+        forces the session user as the requester; the relation must be
+        created via the ``Ticket_User`` itemtype instead.
+        """
+        return self._call(
+            method="POST",
+            url=f"{self._base_url}/apirest.php/Ticket_User",
+            json_body={
+                "input": {
+                    "tickets_id": ticket_id,
+                    "users_id": user_id,
+                    "type": role,
+                }
+            },
+            session_token=session_token,
+        )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
