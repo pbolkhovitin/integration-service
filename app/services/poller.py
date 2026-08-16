@@ -415,6 +415,22 @@ async def _process_task(
                     2,
                     glpi_session,
                 )
+            # Observers (AUDITORS) → GLPI Ticket_User type=3.
+            for auditor in (task_data.get("AUDITORS") or []):
+                try:
+                    observer_id = user_map.get(
+                        int(auditor), {}
+                    ).get("glpi_user_id")
+                except (ValueError, TypeError):
+                    observer_id = None
+                if observer_id:
+                    await asyncio.to_thread(
+                        glpi_client.add_ticket_user,
+                        ticket_id,
+                        observer_id,
+                        3,
+                        glpi_session,
+                    )
     except Exception as exc:
         logger.error("Failed to create GLPI ticket for task %s: %s", task_id, exc)
         async with async_session_factory() as db:
