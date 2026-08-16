@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # Allow creating NEW Bitrix24 tasks from GLPI tickets (phone calls).
     # Disabled by default; enable only after the main exchange is tested.
     BITRIX24_CREATE_TASKS_ENABLED: bool = False
+    # Tasks whose title contains this keyword are automatically added to the
+    # writable test-tasks whitelist during polling. Empty = disabled.
+    BITRIX24_AUTO_WHITELIST_KEYWORD: str = "test_glpi"
 
     model_config = {
         "env_file": ".env",

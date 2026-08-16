@@ -22,7 +22,7 @@ from app.services.bitrix import BitrixClient
 from app.services.glpi import GLPIClient
 from app.services.org_sync import load_user_map, sync_org_structure
 from app.services.reverse_sync import reverse_sync_test_tasks
-from app.services.test_tasks import allowed_test_task_ids
+from app.services.test_tasks import add_test_task, allowed_test_task_ids
 from app.services.ticket_mapper import (
     classify_category,
     extract_problem_description,
@@ -249,6 +249,22 @@ async def _poll_for_user(
             task_id = str(task_data.get("ID", ""))
             if task_id:
                 fetched_ids.add(task_id)
+
+            # Auto-whitelist tasks whose title contains the configured
+            # keyword (e.g. "Test_GLPI") — they become writable for
+            # reverse sync / L1 write-back testing.
+            auto_keyword = settings.BITRIX24_AUTO_WHITELIST_KEYWORD
+            if auto_keyword:
+                title_lower = str(task_data.get("TITLE", "")).lower()
+                if auto_keyword in title_lower:
+                    tid_int = int(task_id) if task_id.isdigit() else None
+                    if tid_int is not None and tid_int not in allowed_test:
+                        await add_test_task(tid_int)
+                        allowed_test.add(tid_int)
+                        logger.info(
+                            "Auto-whitelisted test task %s (title contains %r)",
+                            task_id, auto_keyword,
+                        )
 
             # Client-side lookback window (Bitrix24 filters don't support
             # date ranges here): skip processing old tasks, but keep them
