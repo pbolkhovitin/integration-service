@@ -96,6 +96,27 @@ async def mirror_task_comments(
         return 0
 
     last = task.last_b24_comment_id or 0
+    if task.last_b24_comment_id is None:
+        # First run: baseline to the latest message without replaying the
+        # full chat history into GLPI (avoids flooding followups).
+        new_last = max(m["id"] for m in messages)
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(Task).where(
+                    Task.source == "bitrix24",
+                    Task.source_id == str(task_id),
+                )
+            )
+            db_task = result.scalar_one_or_none()
+            if db_task is not None:
+                db_task.last_b24_comment_id = new_last
+                await db.commit()
+        logger.info(
+            "Mirror: task %s chat baseline set to message %s (no replay)",
+            task_id, new_last,
+        )
+        return 0
+
     new = sorted(
         (m for m in messages if m["id"] > last), key=lambda m: m["id"]
     )
