@@ -310,32 +310,9 @@ async def _sync_one_task(
         else:
             last_l1_hash = task.last_l1_hash
 
-    # --- STATUS SYNC ---
-        last_glpi_status: int | None = None
-        if task.last_glpi_status is not None:
-            try:
-                last_glpi_status = int(task.last_glpi_status)
-            except (ValueError, TypeError):
-                last_glpi_status = None
-
-        if last_glpi_status is None or current_glpi_status != last_glpi_status:
-            mapped_status = _GLPI_TO_BITRIX_STATUS.get(current_glpi_status, 1)
-            await asyncio.to_thread(
-                bitrix_client.update_task_status,
-                task_id,
-                mapped_status,
-            )
-            summary["status_updated"] += 1
-            logger.info(
-                "Reverse sync: updated Bitrix24 task %s status to %d "
-                "(GLPI: %d → Bitrix: %d)",
-                task_id,
-                mapped_status,
-                current_glpi_status,
-                mapped_status,
-            )
-
-    # --- TIME SYNC (elapseditem.add, min fallback) ---
+    # --- TIME SYNC (elapseditem.add, min fallback) — BEFORE status, so a
+    # completed status is written only after the task has elapsed time
+    # (Bitrix24 refuses to complete a task without time). ---
         last_elapsed: int = task.last_elapsed_synced or 0
         actiontime = await asyncio.to_thread(
             glpi_client.sum_ticket_actiontime, glpi_ticket_id, glpi_session
@@ -353,6 +330,38 @@ async def _sync_one_task(
             last_elapsed_synced = actiontime
         else:
             last_elapsed_synced = last_elapsed
+
+    # --- STATUS SYNC (must not abort the whole task on error) ---
+        last_glpi_status: int | None = None
+        if task.last_glpi_status is not None:
+            try:
+                last_glpi_status = int(task.last_glpi_status)
+            except (ValueError, TypeError):
+                last_glpi_status = None
+
+        if last_glpi_status is None or current_glpi_status != last_glpi_status:
+            mapped_status = _GLPI_TO_BITRIX_STATUS.get(current_glpi_status, 1)
+            try:
+                await asyncio.to_thread(
+                    bitrix_client.update_task_status,
+                    task_id,
+                    mapped_status,
+                )
+                summary["status_updated"] += 1
+                logger.info(
+                    "Reverse sync: updated Bitrix24 task %s status to %d "
+                    "(GLPI: %d → Bitrix: %d)",
+                    task_id,
+                    mapped_status,
+                    current_glpi_status,
+                    mapped_status,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Reverse sync: status update failed for task %s "
+                    "(GLPI: %d → Bitrix: %d): %s",
+                    task_id, current_glpi_status, mapped_status, exc,
+                )
 
     # --- FOLLOWUP SYNC (task chat; no chat → description) ---
         last_followup_id: int = task.last_glpi_followup_id or 0
