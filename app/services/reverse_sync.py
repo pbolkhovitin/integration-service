@@ -310,24 +310,39 @@ async def _sync_one_task(
         else:
             last_l1_hash = task.last_l1_hash
 
-    # --- TIME SYNC (elapseditem.add, min fallback) — BEFORE status, so a
-    # completed status is written only after the task has elapsed time
-    # (Bitrix24 refuses to complete a task without time). ---
+    # --- TIME SYNC (elapseditem.add) — BEFORE status, so a completed
+    # status is written only after the task has elapsed time (Bitrix24
+    # refuses to complete a task without time). Writes the DELTA since the
+    # last sync; when completing a task with no time at all, writes the
+    # configured minimum once. ---
+        mapped_status = _GLPI_TO_BITRIX_STATUS.get(current_glpi_status, 1)
         last_elapsed: int = task.last_elapsed_synced or 0
         actiontime = await asyncio.to_thread(
             glpi_client.sum_ticket_actiontime, glpi_ticket_id, glpi_session
         )
-        if actiontime > last_elapsed:
-            minutes = max(actiontime, settings.L1_MIN_ELAPSED_SECONDS)
-            await asyncio.to_thread(
-                bitrix_client.add_elapsed, task_id, minutes
-            )
+        delta = actiontime - last_elapsed
+        if delta > 0:
+            to_add = max(delta, settings.L1_MIN_ELAPSED_SECONDS)
+            await asyncio.to_thread(bitrix_client.add_elapsed, task_id, to_add)
             summary["elapsed_added"] += 1
             logger.info(
                 "Reverse sync: added %ds elapsed to Bitrix24 task %s",
-                minutes, task_id,
+                to_add, task_id,
             )
             last_elapsed_synced = actiontime
+        elif mapped_status == 5 and last_elapsed == 0:
+            # Completing with no time at all → add the minimum once.
+            await asyncio.to_thread(
+                bitrix_client.add_elapsed,
+                task_id,
+                settings.L1_MIN_ELAPSED_SECONDS,
+            )
+            summary["elapsed_added"] += 1
+            logger.info(
+                "Reverse sync: added min %ds elapsed (completing task %s)",
+                settings.L1_MIN_ELAPSED_SECONDS, task_id,
+            )
+            last_elapsed_synced = settings.L1_MIN_ELAPSED_SECONDS
         else:
             last_elapsed_synced = last_elapsed
 
