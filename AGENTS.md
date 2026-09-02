@@ -18,7 +18,8 @@ NetBox→GLPI, Zabbix, SLA/Metabase, MANGO.
    `POST /sync/test-tasks`). Всё остальное в B24 — read-only. Проверка в коде
    (`allowed_test_task_ids`).
 2. **Деплой**: на сервере `cd /opt/integration-service && git pull && docker compose up -d --build api` +
-   `docker exec integration-api alembic upgrade head`. НЕ коммитить/пушить без явного запроса.
+   `docker exec integration-api alembic upgrade head`. Изменения **коммитить и пушить сразу**
+   после реализации (не оставлять незакоммиченными) — сначала локальный репозиторий, затем `git pull` на сервере.
 3. **Не переименовывать сущности/категории GLPI через SQL** — ломает кэш `completename`
    (только через API/org sync; восстановление — `docs/org-structure-update.md`).
 4. **GLPI API list-эндпоинты пагинированы** (range): `get_categories`/`get_entities`/

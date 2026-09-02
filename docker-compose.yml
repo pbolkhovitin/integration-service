@@ -49,6 +49,8 @@ services:
       dockerfile: Dockerfile
     container_name: integration-api
     restart: unless-stopped
+    extra_hosts:
+      - "b24.apo-avrora.ru:172.17.231.121"
     ports:
       - "8000:8000"
     networks:
