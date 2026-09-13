@@ -443,8 +443,8 @@ async def _process_task(
             (settings.BITRIX24_FIELDS_STATUS_KEY, str(task_data.get("STATUS") or "")),
             (settings.BITRIX24_FIELDS_PRIORITY_KEY, str(task_data.get("PRIORITY") or "")),
             (settings.BITRIX24_FIELDS_CATEGORY_KEY, category_name or ""),
-            (settings.BITRIX24_FIELDS_PARENT_KEY, str(task_data.get("PARENT_ID") or "")),
-            (settings.BITRIX24_FIELDS_GROUP_KEY, str(task_data.get("GROUP_ID") or "")),
+            (settings.BITRIX24_FIELDS_PARENT_KEY, str(task_data.get("PARENTID") or "")),
+            (settings.BITRIX24_FIELDS_GROUP_KEY, str(task_data.get("GROUPID") or "")),
         ):
             if key:
                 plugin_fields[key] = value
