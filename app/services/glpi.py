@@ -128,7 +128,6 @@ class GLPIClient:
         name: str,
         content: str,
         session_token: str,
-        category_id: int | None = None,
         group_id: int | None = None,
         entity_id: int | None = None,
         *,
@@ -156,7 +155,6 @@ class GLPIClient:
             content: Body / description of the ticket.
             session_token: A valid session token obtained from
                 :meth:`init_session`.
-            category_id: Optional GLPI category ID (``categories_id``).
             group_id: Optional GLPI group ID (``groups_id``).
             entity_id: Optional GLPI entity ID (``entities_id``).
             requester_id: GLPI user ID of the requester (``_users_id_requester``).

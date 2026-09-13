@@ -400,7 +400,7 @@ class TestCreateTicketDefaults:
     def test_category_group_entity_included_when_provided(self) -> None:
         def handler(request: Request) -> Response:
             body = json.loads(request.read())
-            assert body["input"][0]["categories_id"] == 7
+            assert body["input"][0]["itilcategories_id"] == 7
             assert body["input"][0]["groups_id"] == 3
             assert body["input"][0]["entities_id"] == 5
             return Response(201, json={"id": 101})
@@ -410,7 +410,7 @@ class TestCreateTicketDefaults:
             "Name",
             "Content",
             "sess",
-            category_id=7,
+            itilcategories_id=7,
             group_id=3,
             entity_id=5,
         )
