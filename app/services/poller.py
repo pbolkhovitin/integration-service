@@ -425,12 +425,35 @@ async def _process_task(
 
     # Create GLPI ticket via sync call in thread
     try:
+        # B24-specific task data → fields-plugin container «Bitrix24»
+        # (separate plugin tables; native GLPI fields untouched).
+        plugin_fields: dict[str, str] = {}
+        if settings.portal_url:
+            b24_user = int(
+                task_data.get("RESPONSIBLE_ID")
+                or task_data.get("CREATED_BY")
+                or 0
+            )
+            if b24_user and settings.BITRIX24_FIELDS_URL_KEY:
+                plugin_fields[settings.BITRIX24_FIELDS_URL_KEY] = (
+                    f"{settings.portal_url}/company/personal/user/{b24_user}"
+                    f"/tasks/task/view/{task_id}/"
+                )
+        for key, value in (
+            (settings.BITRIX24_FIELDS_STATUS_KEY, str(task_data.get("STATUS") or "")),
+            (settings.BITRIX24_FIELDS_PRIORITY_KEY, str(task_data.get("PRIORITY") or "")),
+            (settings.BITRIX24_FIELDS_CATEGORY_KEY, category_name or ""),
+            (settings.BITRIX24_FIELDS_PARENT_KEY, str(task_data.get("PARENT_ID") or "")),
+            (settings.BITRIX24_FIELDS_GROUP_KEY, str(task_data.get("GROUP_ID") or "")),
+        ):
+            if key:
+                plugin_fields[key] = value
+
         ticket = await asyncio.to_thread(
             glpi_client.create_ticket,
             name=title,
             content=content,
             session_token=glpi_session,
-            category_id=category_id or settings.GLPI_DEFAULT_CATEGORY_ID,
             group_id=settings.GLPI_DEFAULT_GROUP_ID,
             entity_id=settings.GLPI_DEFAULT_ENTITY_ID,
             requesttypes_id=settings.GLPI_BITRIX24_REQUESTTYPE_ID,
@@ -440,8 +463,9 @@ async def _process_task(
             closedate=parse_dt(task_data.get("CLOSED_DATE")),
             priority=map_priority(task_data.get("PRIORITY")),
             status=map_status(task_data.get("STATUS")),
-            itilcategories_id=category_id,
+            itilcategories_id=category_id or settings.GLPI_DEFAULT_CATEGORY_ID,
             externalid=task_id,
+            plugin_fields=plugin_fields or None,
         )
         # GLPI 11 forces the session user as requester on creation — assign
         # the real requester/assignee via the Ticket_User relation.

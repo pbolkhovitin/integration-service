@@ -434,13 +434,13 @@ class TestCreateTicketDefaults:
         def handler(request: Request) -> Response:
             body = json.loads(request.read())
             payload = body["input"][0]
-            assert payload["categories_id"] == 7
+            assert payload["itilcategories_id"] == 7
             assert "groups_id" not in payload
             assert "entities_id" not in payload
             return Response(201, json={"id": 101})
 
         client = _build_client(handler)
-        client.create_ticket("Name", "Content", "sess", category_id=7)
+        client.create_ticket("Name", "Content", "sess", itilcategories_id=7)
 
 
 # ===================================================================

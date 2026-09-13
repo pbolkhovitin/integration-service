@@ -143,6 +143,7 @@ class GLPIClient:
         externalid: str | None = None,
         requesttypes_id: int | None = None,
         ticket_type: int = 1,
+        plugin_fields: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a new GLPI incident ticket.
 
@@ -180,8 +181,6 @@ class GLPIClient:
             "content": content,
             "type": ticket_type,
         }
-        if category_id is not None:
-            ticket["categories_id"] = category_id
         if group_id is not None:
             ticket["groups_id"] = group_id
         if entity_id is not None:
@@ -206,6 +205,10 @@ class GLPIClient:
             ticket["externalid"] = externalid
         if requesttypes_id is not None:
             ticket["requesttypes_id"] = requesttypes_id
+        if plugin_fields:
+            # Fields-plugin container «Bitrix24» values are passed alongside
+            # native fields; GLPI writes them to glpi_plugin_fields_* tables.
+            ticket.update(plugin_fields)
         payload: dict[str, list[dict[str, Any]]] = {"input": [ticket]}
         logger.debug("POST %s — creating ticket %r", url, name)
 

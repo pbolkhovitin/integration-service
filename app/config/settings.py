@@ -1,6 +1,8 @@
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
+import re
+
 
 class Settings(BaseSettings):
     # App
@@ -85,6 +87,24 @@ class Settings(BaseSettings):
     # tasks. Other users are filtered out.
     BITRIX24_TEST_TASK_USER_IDS: str = "70,445,545,577"
 
+    # Fields-plugin container «Bitrix24» (dom/Ticket, name=bitrixtwofour).
+    # Stores B24-specific task data in GLPI (separate plugin tables) without
+    # touching native ticket fields — no GLPI-logic impact, GLPI updates safe.
+    # Each setting is the plugin field API key (glpi_plugin_fields_fields.name);
+    # empty string disables that field. Values written on ticket creation:
+    #   URL      = ссылка на задачу в B24
+    #   Status   = числовой статус B24 (1..6)
+    #   Priority = числовой приоритет B24 (1..4)
+    #   Category = имя категории, назначенной в GLPI
+    #   Parent   = PARENT_ID задачи
+    #   Group    = GROUP_ID задачи
+    BITRIX24_FIELDS_URL_KEY: str = "btwofoururlfield"
+    BITRIX24_FIELDS_STATUS_KEY: str = "btwofourstatusfield"
+    BITRIX24_FIELDS_PRIORITY_KEY: str = "btwofourpriorityfield"
+    BITRIX24_FIELDS_CATEGORY_KEY: str = "btwofourcategoryfield"
+    BITRIX24_FIELDS_PARENT_KEY: str = "btwofourparentfield"
+    BITRIX24_FIELDS_GROUP_KEY: str = "btwofourgroupfield"
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
@@ -125,6 +145,12 @@ class Settings(BaseSettings):
     def im_webhook_url(self) -> str:
         """Webhook with the 'im' scope for task-chat operations."""
         return self.BITRIX24_IM_WEBHOOK_URL or self.BITRIX24_ORG_WEBHOOK_URL
+
+    @property
+    def portal_url(self) -> str:
+        """Bitrix24 portal origin (scheme://host) derived from the webhook URL."""
+        match = re.match(r"^(https?://[^/]+)", self.BITRIX24_WEBHOOK_URL or "")
+        return match.group(1) if match else ""
 
 
 settings = Settings()
