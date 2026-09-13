@@ -27,6 +27,24 @@ PRIORITY_MAP: dict[int, int] = {
     4: 5,  # urgent
 }
 
+# Human-readable labels for the fields-plugin container «Bitrix24»
+# (values shown in the GLPI ticket UI, not used by mapping logic).
+B24_STATUS_NAMES: dict[int, str] = {
+    1: "Новая",
+    2: "В ожидании",
+    3: "В работе",
+    4: "Ожидает контроля",
+    5: "Завершена",
+    6: "Отложена",
+}
+
+B24_PRIORITY_NAMES: dict[int, str] = {
+    1: "Низкий",
+    2: "Средний",
+    3: "Высокий",
+    4: "Срочный",
+}
+
 # Service categories (source: b24-add-report XLSX + server work) → GLPI
 # itilcategory NAME. The GLPI category ids are resolved at runtime by name.
 # Order matters: MORE SPECIFIC categories first (prefix matching), broad
@@ -141,6 +159,24 @@ def map_status(b24_status: int | None) -> int:
 def map_priority(b24_priority: int | None) -> int:
     """Map a Bitrix24 task priority to a GLPI ticket priority."""
     return PRIORITY_MAP.get(int(b24_priority or 2), 3)
+
+
+def b24_status_label(b24_status: int | str | None) -> str:
+    """Human-readable Bitrix24 status name (for the fields-plugin field)."""
+    try:
+        return B24_STATUS_NAMES.get(int(b24_status or 0), str(b24_status or ""))
+    except (ValueError, TypeError):
+        return str(b24_status or "")
+
+
+def b24_priority_label(b24_priority: int | str | None) -> str:
+    """Human-readable Bitrix24 priority name (for the fields-plugin field)."""
+    try:
+        return B24_PRIORITY_NAMES.get(
+            int(b24_priority or 0), str(b24_priority or "")
+        )
+    except (ValueError, TypeError):
+        return str(b24_priority or "")
 
 
 def parse_dt(value: Any) -> str | None:

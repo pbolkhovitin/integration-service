@@ -25,6 +25,10 @@ from app.services.org_sync import load_user_map, sync_org_structure
 from app.services.reverse_sync import reverse_sync_test_tasks
 from app.services.test_tasks import add_test_task, allowed_test_task_ids
 from app.services.ticket_mapper import (
+    b24_priority_label,
+    b24_status_label,
+)
+from app.services.ticket_mapper import (
     classify_category,
     extract_problem_description,
     map_priority,
@@ -33,6 +37,10 @@ from app.services.ticket_mapper import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Cache of Bitrix24 parent-task titles (id → TITLE) — resolved lazily when
+# writing the human-readable B24 Parent plugin field.
+_parent_title_cache: dict[int, str] = {}
 
 # Global scheduler instance
 _scheduler: AsyncIOScheduler | None = None
@@ -427,6 +435,8 @@ async def _process_task(
     try:
         # B24-specific task data → fields-plugin container «Bitrix24»
         # (separate plugin tables; native GLPI fields untouched).
+        # Human-readable values: status/priority labels, group name,
+        # parent task title.
         plugin_fields: dict[str, str] = {}
         if settings.portal_url:
             b24_user = int(
@@ -439,12 +449,49 @@ async def _process_task(
                     f"{settings.portal_url}/company/personal/user/{b24_user}"
                     f"/tasks/task/view/{task_id}/"
                 )
+
+        # B24 group name (payload GROUP is a dict {"id":…, "name":…}).
+        group_info = task_data.get("GROUP") or {}
+        group_name = (
+            group_info.get("name") if isinstance(group_info, dict) else ""
+        )
+
+        # B24 parent task title (only when a parent exists).
+        parent_id_raw = str(task_data.get("PARENTID") or "")
+        parent_title = ""
+        if parent_id_raw not in ("", "0"):
+            try:
+                parent_id = int(parent_id_raw)
+                parent_title = _parent_title_cache.get(parent_id, "")
+                if not parent_title:
+                    parent_task = await asyncio.to_thread(
+                        bitrix_client.get_task, parent_id
+                    )
+                    parent_title = str(
+                        parent_task.get("TITLE") or parent_task.get("title") or ""
+                    )
+                    _parent_title_cache[parent_id] = parent_title
+            except (ValueError, TypeError):
+                parent_title = ""
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to fetch parent title for task %s: %s",
+                    task_id, exc,
+                )
+                parent_title = ""
+
         for key, value in (
-            (settings.BITRIX24_FIELDS_STATUS_KEY, str(task_data.get("STATUS") or "")),
-            (settings.BITRIX24_FIELDS_PRIORITY_KEY, str(task_data.get("PRIORITY") or "")),
+            (
+                settings.BITRIX24_FIELDS_STATUS_KEY,
+                b24_status_label(task_data.get("STATUS")),
+            ),
+            (
+                settings.BITRIX24_FIELDS_PRIORITY_KEY,
+                b24_priority_label(task_data.get("PRIORITY")),
+            ),
             (settings.BITRIX24_FIELDS_CATEGORY_KEY, category_name or ""),
-            (settings.BITRIX24_FIELDS_PARENT_KEY, str(task_data.get("PARENTID") or "")),
-            (settings.BITRIX24_FIELDS_GROUP_KEY, str(task_data.get("GROUPID") or "")),
+            (settings.BITRIX24_FIELDS_PARENT_KEY, parent_title),
+            (settings.BITRIX24_FIELDS_GROUP_KEY, group_name),
         ):
             if key:
                 plugin_fields[key] = value
