@@ -125,7 +125,8 @@ class BitrixClient:
     def get_task(self, task_id: int) -> dict[str, Any]:
         """Get a single task by ID.
 
-        Uses ``task.get.json`` endpoint.
+        Uses ``tasks.task.get.json`` (modern endpoint, same as
+        ``tasks.task.list.json``).
 
         Args:
             task_id: Bitrix24 task ID.
@@ -133,9 +134,9 @@ class BitrixClient:
         Returns:
             Full task data dict with all fields.
         """
-        result = self._call("task.get.json", params={"TASK_ID": task_id})
+        result = self._call("tasks.task.get.json", params={"taskId": task_id})
 
-        # task.get returns {"result": {"task": {...}}}
+        # tasks.task.get returns {"result": {"task": {...}}}
         task_data = result.get("result", {})
         if isinstance(task_data, dict) and "task" in task_data:
             return task_data["task"]
