@@ -117,16 +117,20 @@ _CATEGORY_MARKER_RE = re.compile(r'Категор\w*\s*:?\s*\[?/?b\]?\s*([^\n\[\
 **Контейнер** (id=1): label `Bitrix24`, внутреннее имя `bitrixtwofour` (по правилу «цифры→слова»),
 тип `dom`, itemtype `Ticket`, активен, `entities_id=0` (рекурсивно).
 
-**Поля** (id 1..6, все `text`, активны, container=1):
+**Поля** (id 1..6, активны, container=1):
 
-| id | Ключ (API) | Label | Назначение |
-|---|---|---|---|
-| 1 | `btwofoururlfield` | B24 URL | ссылка на задачу |
-| 2 | `btwofourstatusfield` | B24 Status | статус B24 (1..6) |
-| 3 | `btwofourpriorityfield` | B24 Priority | маркер `Приоритет:` |
-| 4 | `btwofourcategoryfield` | B24 Category | маркер `Категория:` |
-| 5 | `btwofourparentfield` | B24 Parent | `PARENT_ID` |
-| 6 | `btwofourgroupfield` | B24 Group | `GROUP_ID` |
+| id | Ключ (API) | Label | Тип | Назначение |
+|---|---|---|---|---|
+| 1 | `btwofoururlfield` | B24 URL | `url` | ссылка на задачу (кликабельная, target=_blank) |
+| 2 | `btwofourstatusfield` | B24 Status | `text` | статус B24 (1..6) |
+| 3 | `btwofourpriorityfield` | B24 Priority | `text` | маркер `Приоритет:` |
+| 4 | `btwofourcategoryfield` | B24 Category | `text` | маркер `Категория:` |
+| 5 | `btwofourparentfield` | B24 Parent | `text` | `PARENT_ID` |
+| 6 | `btwofourgroupfield` | B24 Group | `text` | `GROUP_ID` |
+
+> Примечание: B24 URL изначально был создан как `text` (не кликабельный); тип изменён на `url`
+> напрямую в `glpi_plugin_fields_fields` (тип не редактируется в форме поля) + регенерация
+> `php bin/console plugins:fields:regenerate_files`. Ключ и данные не изменились.
 
 **Права (таблица `glpi_plugin_fields_profiles`, container=1):** Super-Admin → 4 (Запись),
 Admin → 1 (Чтение), Technician → 1 (Чтение); остальные → 4 (дефолт `createForContainer`).
